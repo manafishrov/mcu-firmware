@@ -6,9 +6,6 @@ control thrusters. It supports two runtime-selectable control protocols:
 - DShot (digital ESC control)
 - PWM (analog ESC control)
 
-All development dependencies are included in the firmware environment on the
-Manafish Pi, so you can develop directly on the device.
-
 ## Prerequisites
 
 - Raspberry Pi Pico SDK (automatically fetched by CMake)
