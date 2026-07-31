@@ -13,7 +13,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Release tag is not SemVer: $tag" >&2
+            exit 1
+          fi
+          header_version="$(
+            awk '
+              /MCU_FIRMWARE_VERSION_MAJOR/ { major = $3 }
+              /MCU_FIRMWARE_VERSION_MINOR/ { minor = $3 }
+              /MCU_FIRMWARE_VERSION_PATCH/ { patch = $3 }
+              END { print major "." minor "." patch }
+            ' src/version.h
+          )"
+          tag_version="${tag#v}"
+          tag_version="${tag_version%%[-+]*}"
+          if [[ "$tag_version" != "$header_version" ]]; then
+            echo "Tag $tag does not match src/version.h ($header_version)" >&2
+            exit 1
+          fi
 
       - name: Install Arm GNU Toolchain
         run: |
@@ -24,7 +48,7 @@ jobs:
         run: |
           mkdir -p build/pico
           cd build/pico
-          cmake -S $GITHUB_WORKSPACE -B . -DCMAKE_BUILD_TYPE=Release -DPICO_SDK_FETCH_FROM_GIT=ON
+          cmake -S "$GITHUB_WORKSPACE" -B . -DCMAKE_BUILD_TYPE=Release -DPICO_SDK_FETCH_FROM_GIT=ON
 
       - name: Build Firmware for Pico
         run: |
@@ -35,7 +59,7 @@ jobs:
         run: |
           mkdir -p build/pico2
           cd build/pico2
-          cmake -S $GITHUB_WORKSPACE -B . -DCMAKE_BUILD_TYPE=Release -DPICO_SDK_FETCH_FROM_GIT=ON -DPICO_BOARD=pico2
+          cmake -S "$GITHUB_WORKSPACE" -B . -DCMAKE_BUILD_TYPE=Release -DPICO_SDK_FETCH_FROM_GIT=ON -DPICO_BOARD=pico2
 
       - name: Build Firmware for Pico 2
         run: |
@@ -48,7 +72,7 @@ jobs:
           cp build/pico2/firmware.uf2 pico2-${{ github.ref_name }}.uf2
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

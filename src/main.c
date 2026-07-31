@@ -12,6 +12,7 @@
 #include <pico/time.h>
 #include <pico/types.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define DSHOT_PIO pio0
