@@ -39,11 +39,6 @@ enum dshot_telemetry_type {
     DSHOT_TELEMETRY_TYPE_COUNT,
 };
 
-/* Bitmask covering all EDT types (everything except eRPM).
- * Non-zero when ANDed with telemetry_types means EDT frames have been received. */
-#define DSHOT_EXTENDED_TELEMETRY_MASK                                                              \
-    ((((1u << DSHOT_TELEMETRY_TYPE_COUNT) - 1u)) & ~(1u << DSHOT_TELEMETRY_TYPE_ERPM))
-
 /* DShot special commands (values 0-47, sent with telemetry bit = 1) */
 enum dshot_commands {
     DSHOT_CMD_MOTOR_STOP = 0,
