@@ -7,6 +7,7 @@
 int mock_gpio_function[30];
 int mock_gpio_direction[30];
 int mock_gpio_value[30];
+bool mock_gpio_pwm_enabled_when_selected[30];
 bool mock_pwm_enabled[8];
 float mock_pwm_divider[8];
 uint16_t mock_pwm_wrap[8];
@@ -17,6 +18,7 @@ static void reset_pwm_mocks(void) {
     memset(mock_gpio_function, 0, sizeof(mock_gpio_function));
     memset(mock_gpio_direction, 0, sizeof(mock_gpio_direction));
     memset(mock_gpio_value, 0, sizeof(mock_gpio_value));
+    memset(mock_gpio_pwm_enabled_when_selected, 0, sizeof(mock_gpio_pwm_enabled_when_selected));
     memset(mock_pwm_enabled, 0, sizeof(mock_pwm_enabled));
     memset(mock_pwm_divider, 0, sizeof(mock_pwm_divider));
     memset(mock_pwm_wrap, 0, sizeof(mock_pwm_wrap));
@@ -43,6 +45,21 @@ static void test_pwm_init_configures_all_eight_motor_outputs_before_enable(void)
     }
 }
 
+static void test_pwm_init_disables_slices_before_connecting_gpio(void) {
+    reset_pwm_mocks();
+    struct pwm_controller controller;
+    uint pins[PWM_MAX_CHANNELS] = {6, 7, 8, 9, 18, 19, 20, 21};
+    for (uint slice = 1; slice <= 4; ++slice) {
+        mock_pwm_enabled[slice] = true;
+    }
+
+    pwm_controller_init(&controller, pins, PWM_MAX_CHANNELS, 1500);
+
+    for (uint channel = 0; channel < PWM_MAX_CHANNELS; ++channel) {
+        TEST_ASSERT_FALSE(mock_gpio_pwm_enabled_when_selected[pins[channel]]);
+    }
+}
+
 static void test_pwm_deinit_disables_every_slice_and_drives_outputs_low(void) {
     reset_pwm_mocks();
     struct pwm_controller controller;
@@ -64,5 +81,6 @@ static void test_pwm_deinit_disables_every_slice_and_drives_outputs_low(void) {
 
 void test_pwm_driver(void) {
     RUN_TEST(test_pwm_init_configures_all_eight_motor_outputs_before_enable);
+    RUN_TEST(test_pwm_init_disables_slices_before_connecting_gpio);
     RUN_TEST(test_pwm_deinit_disables_every_slice_and_drives_outputs_low);
 }

@@ -28,8 +28,6 @@ void pwm_controller_init(struct pwm_controller *controller, uint *pins, uint num
 
     for (uint i = 0; i < num_channels; ++i) {
         controller->pin[i] = pins[i];
-        gpio_set_function(pins[i], GPIO_FUNC_PWM);
-
         uint slice = pwm_gpio_to_slice_num(pins[i]);
         controller->slice[i] = slice;
 
@@ -39,6 +37,8 @@ void pwm_controller_init(struct pwm_controller *controller, uint *pins, uint num
             pwm_set_wrap(slice, PWM_WRAP);
             slice_configured[slice] = true;
         }
+
+        gpio_set_function(pins[i], GPIO_FUNC_PWM);
 
         // Program both channels before enabling their shared slice. Enabling
         // a slice while only its first GPIO is initialized can briefly leave
