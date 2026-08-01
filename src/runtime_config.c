@@ -33,6 +33,16 @@ void mcu_runtime_config_validate(mcu_runtime_config_t *config) {
     }
 }
 
+bool mcu_runtime_config_requires_detector_reset(const mcu_runtime_config_t *current,
+                                                const mcu_runtime_config_t *next) {
+    if (current->protocol != next->protocol) {
+        return true;
+    }
+
+    return current->protocol == THRUSTER_PROTOCOL_DSHOT &&
+           current->dshot_speed != next->dshot_speed;
+}
+
 bool mcu_runtime_config_parse_packet(const uint8_t *packet, size_t packet_size,
                                      mcu_runtime_config_t *out_config) {
     if (packet_size != USB_CONFIG_PACKET_SIZE || packet[0] != USB_CONFIG_START_BYTE) {

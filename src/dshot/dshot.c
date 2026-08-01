@@ -390,8 +390,8 @@ static uint32_t dshot_decode_erpm_telemetry_value(uint16_t value) {
 
 /*
  * Decode telemetry value into type + decoded value.
- * EDT detection follows Betaflight: enabled when edt_always_decode is set
- * or when any EDT type has been previously received (bitmask check).
+ * EDT detection starts only after the ESC acknowledges command 13. Before
+ * that handshake, even-nibble eRPM frames must not be mistaken for EDT data.
  *
  * EDT frame discrimination (4-bit type field, bits 11:8):
  *   - Bit 0 = 1 (odd) -> always eRPM
@@ -401,11 +401,9 @@ static uint32_t dshot_decode_erpm_telemetry_value(uint16_t value) {
 static void dshot_decode_telemetry_value(struct dshot_controller *controller, uint16_t raw_value,
                                          uint32_t *decoded, enum dshot_telemetry_type *type) {
     struct dshot_motor *motor = &controller->motor[controller->channel];
-    bool edt_active = controller->edt_always_decode ||
-                      (motor->telemetry_types & DSHOT_EXTENDED_TELEMETRY_MASK) != 0;
 
     unsigned telemetry_type = (raw_value & 0x0F00) >> 8;
-    bool is_erpm = !edt_active || (telemetry_type & 0x01) || (telemetry_type == 0);
+    bool is_erpm = !motor->edt_enabled || (telemetry_type & 0x01) || (telemetry_type == 0);
 
     if (is_erpm) {
         *decoded = dshot_decode_erpm_telemetry_value(raw_value);
@@ -415,6 +413,16 @@ static void dshot_decode_telemetry_value(struct dshot_controller *controller, ui
         *type = edt_type_lookup[type_index];
         *decoded = raw_value & 0x00FF;
     }
+}
+
+static bool dshot_handle_edt_handshake(struct dshot_motor *motor, uint16_t raw_value) {
+    if ((raw_value & 0x0F00) != 0x0E00 ||
+        motor->current_command != DSHOT_EXTENDED_TELEMETRY_ENABLE) {
+        return false;
+    }
+
+    motor->edt_enabled = true;
+    return true;
 }
 
 static void dshot_update_telemetry_data(struct dshot_motor *motor, enum dshot_telemetry_type type,
@@ -488,6 +496,12 @@ static void dshot_receive_oversampled(struct dshot_controller *controller, const
     }
 
     uint16_t raw_value = (frame >> 4) & 0x0FFF;
+
+    if (dshot_handle_edt_handshake(motor, raw_value)) {
+        motor->stats.rx_frames++;
+        dshot_update_telemetry_quality(&motor->quality, true, now_ms);
+        return;
+    }
 
     enum dshot_telemetry_type type;
     uint32_t decoded;
@@ -626,6 +640,7 @@ void dshot_command(struct dshot_controller *controller, uint16_t channel, uint16
     motor->command_counter = repeat_count;
 
     if (command == DSHOT_EXTENDED_TELEMETRY_DISABLE) {
+        motor->edt_enabled = false;
         motor->telemetry_types = 0;
     }
 

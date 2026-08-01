@@ -41,6 +41,45 @@ static void test_validate_corrects_invalid_protocol_and_speed(void) {
     TEST_ASSERT_EQUAL_UINT16(300, config.dshot_speed);
 }
 
+static void test_detector_reset_is_required_for_dshot_speed_changes(void) {
+    const mcu_runtime_config_t current = {
+        .protocol = THRUSTER_PROTOCOL_DSHOT,
+        .dshot_speed = 300,
+    };
+    const mcu_runtime_config_t next = {
+        .protocol = THRUSTER_PROTOCOL_DSHOT,
+        .dshot_speed = 600,
+    };
+
+    TEST_ASSERT_TRUE(mcu_runtime_config_requires_detector_reset(&current, &next));
+}
+
+static void test_detector_reset_is_required_for_protocol_changes(void) {
+    const mcu_runtime_config_t current = {
+        .protocol = THRUSTER_PROTOCOL_DSHOT,
+        .dshot_speed = 300,
+    };
+    const mcu_runtime_config_t next = {
+        .protocol = THRUSTER_PROTOCOL_PWM,
+        .dshot_speed = 300,
+    };
+
+    TEST_ASSERT_TRUE(mcu_runtime_config_requires_detector_reset(&current, &next));
+}
+
+static void test_detector_reset_ignores_inactive_pwm_dshot_speed(void) {
+    const mcu_runtime_config_t current = {
+        .protocol = THRUSTER_PROTOCOL_PWM,
+        .dshot_speed = 300,
+    };
+    const mcu_runtime_config_t next = {
+        .protocol = THRUSTER_PROTOCOL_PWM,
+        .dshot_speed = 600,
+    };
+
+    TEST_ASSERT_FALSE(mcu_runtime_config_requires_detector_reset(&current, &next));
+}
+
 static void test_parse_packet_accepts_valid_packet_and_populates_config(void) {
     uint8_t packet[USB_CONFIG_PACKET_SIZE] = {
         USB_CONFIG_START_BYTE, THRUSTER_PROTOCOL_PWM, 150, 0, 0,
@@ -90,6 +129,9 @@ void test_runtime_config(void) {
     RUN_TEST(test_normalize_dshot_speed_defaults_unknown_values_to_300);
     RUN_TEST(test_validate_keeps_valid_config_unchanged);
     RUN_TEST(test_validate_corrects_invalid_protocol_and_speed);
+    RUN_TEST(test_detector_reset_is_required_for_dshot_speed_changes);
+    RUN_TEST(test_detector_reset_is_required_for_protocol_changes);
+    RUN_TEST(test_detector_reset_ignores_inactive_pwm_dshot_speed);
     RUN_TEST(test_parse_packet_accepts_valid_packet_and_populates_config);
     RUN_TEST(test_parse_packet_rejects_wrong_size);
     RUN_TEST(test_parse_packet_rejects_wrong_start_byte);

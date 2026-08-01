@@ -6,7 +6,7 @@ TEST_SRC = $(TEST_DIR)/test_main.c $(TEST_SUITE_SRC)
 TEST_SUITE_SRC = $(filter-out $(TEST_DIR)/test_main.c,$(wildcard $(TEST_DIR)/test_*.c))
 TEST_STUB_SRC = $(wildcard $(TEST_DIR)/stubs/*.c)
 TEST_UNITY_SRC = $(TEST_DIR)/unity/unity.c
-TEST_APP_SRC = src/usb_comm.c src/runtime_config.c src/pwm/control.c src/dshot/control.c
+TEST_APP_SRC = src/usb_comm.c src/runtime_config.c src/pwm/control.c src/pwm/pwm.c src/dshot/control.c
 CMAKE_FLAGS = -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPICO_SDK_FETCH_FROM_GIT=ON -DPython3_EXECUTABLE=$(shell which python3)
 CMAKE_FLAGS_PICO2 = $(CMAKE_FLAGS) -DPICO_BOARD=pico2
 ARM_GCC_INCLUDE = $(shell arm-none-eabi-gcc -print-file-name=include)

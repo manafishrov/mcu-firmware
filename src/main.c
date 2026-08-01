@@ -22,6 +22,8 @@
 #define INPUT_PACKET_SIZE USB_INPUT_PACKET_SIZE(NUM_MOTORS)
 #define QUALITY_WARN_THRESHOLD 5000
 #define QUALITY_REPORT_INTERVAL_MS 100
+#define ESC_PROTOCOL_DETECTION_RESET_MS 2100
+#define PWM_DETECTION_SETTLE_MS 1000
 
 static uint16_t command_values[NUM_MOTORS] = {CMD_THROTTLE_NEUTRAL};
 static absolute_time_t last_comm_time;
@@ -40,6 +42,7 @@ static dshot_telemetry_context_t dshot_context1 = {.controller_base_global_id = 
 static bool pwm_initialized = false;
 static bool dshot_initialized = false;
 static bool runtime_config_received = false;
+static bool protocol_ready = false;
 
 static mcu_runtime_config_t current_config = {0};
 
@@ -84,21 +87,25 @@ static void init_pwm_protocol(void) {
     uint pins[NUM_MOTORS] = {MOTOR0_PIN_BASE,     MOTOR0_PIN_BASE + 1, MOTOR0_PIN_BASE + 2,
                              MOTOR0_PIN_BASE + 3, MOTOR1_PIN_BASE,     MOTOR1_PIN_BASE + 1,
                              MOTOR1_PIN_BASE + 2, MOTOR1_PIN_BASE + 3};
-    pwm_controller_init(&pwm_controller, pins, NUM_MOTORS);
+    pwm_controller_init(&pwm_controller, pins, NUM_MOTORS,
+                        pwm_translate_throttle(CMD_THROTTLE_NEUTRAL));
     pwm_initialized = true;
+
+    // PWM-capable ESCs need multiple 50 Hz neutral frames to detect the
+    // waveform and arm. Do not acknowledge the configuration until every
+    // channel has had enough time to observe those frames.
+    sleep_ms(PWM_DETECTION_SETTLE_MS);
 }
 
-static void init_dshot_protocol(uint16_t dshot_speed) {
+static bool init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
     dshot_controller_reset_calibration();
     dshot_telemetry_usb_init();
     dshot_controller_init(&dshot_controller0, dshot_speed, DSHOT_PIO, DSHOT_SM_0, MOTOR0_PIN_BASE,
                           NUM_MOTORS_0);
-    dshot_controller0.edt_always_decode = true;
     dshot_register_telemetry_cb(&dshot_controller0, dshot_telemetry_callback, &dshot_context0);
 
     dshot_controller_init(&dshot_controller1, dshot_speed, DSHOT_PIO, DSHOT_SM_1, MOTOR1_PIN_BASE,
                           NUM_MOTORS_1);
-    dshot_controller1.edt_always_decode = true;
     dshot_register_telemetry_cb(&dshot_controller1, dshot_telemetry_callback, &dshot_context1);
 
     for (int i = 0; i < NUM_MOTORS; ++i) {
@@ -111,11 +118,33 @@ static void init_dshot_protocol(uint16_t dshot_speed) {
     dshot_send_commands(command_values, &dshot_controller0, &dshot_controller1);
     dshot_run_frame_cycles(&dshot_controller0, &dshot_controller1, NUM_MOTORS * 4);
     dshot_send_command_to_all(&dshot_controller0, &dshot_controller1, DSHOT_CMD_3D_MODE_ON, 10);
-    dshot_send_command_to_all(&dshot_controller0, &dshot_controller1, DSHOT_CMD_SAVE_SETTINGS, 10);
+    if (persist_3d_mode) {
+        dshot_send_command_to_all(&dshot_controller0, &dshot_controller1, DSHOT_CMD_SAVE_SETTINGS,
+                                  10);
+    }
     dshot_send_command_to_all(&dshot_controller0, &dshot_controller1,
                               DSHOT_EXTENDED_TELEMETRY_ENABLE, 10);
-    dshot_wait_for_telemetry(&dshot_controller0, &dshot_controller1);
+    bool telemetry_ready = dshot_wait_for_telemetry(&dshot_controller0, &dshot_controller1);
     dshot_initialized = true;
+    return telemetry_ready;
+}
+
+static bool dshot_telemetry_ready(void) {
+    return dshot_is_telemetry_active(&dshot_controller0) &&
+           dshot_is_telemetry_active(&dshot_controller1);
+}
+
+static void log_missing_dshot_telemetry(void) {
+    uint8_t missing = dshot_missing_telemetry_mask(&dshot_controller0, &dshot_controller1);
+    for (int i = 0; i < NUM_MOTORS; ++i) {
+        if ((missing & (1u << i)) != 0) {
+            struct dshot_controller *ctrl;
+            int channel;
+            dshot_get_motor_controller(i, &ctrl, &channel, &dshot_controller0, &dshot_controller1);
+            log_warnf("DShot transition blocked: motor %d has no eRPM telemetry (%s)", i,
+                      dshot_dominant_failure_name(&ctrl->motor[channel].stats));
+        }
+    }
 }
 
 static void hold_neutral_before_switch(void) {
@@ -139,25 +168,47 @@ static void apply_runtime_config(mcu_runtime_config_t config) {
     mcu_runtime_config_validate(&config);
 
     bool switching = runtime_config_received && (dshot_initialized || pwm_initialized);
+    bool reset_detector = runtime_config_received &&
+                          mcu_runtime_config_requires_detector_reset(&current_config, &config);
+    bool entering_dshot =
+        config.protocol == THRUSTER_PROTOCOL_DSHOT &&
+        (!runtime_config_received || current_config.protocol != THRUSTER_PROTOCOL_DSHOT);
     if (switching) {
         hold_neutral_before_switch();
     }
+
+    protocol_ready = false;
 
     if (runtime_config_received) {
         deinit_protocol(current_config.protocol);
     }
 
+    if (reset_detector) {
+        // AM32 keeps the detected input decoder until it has seen two seconds
+        // without a valid signal while unarmed. This applies both to protocol
+        // changes and to DShot baud-rate changes after its frame timing has
+        // been calibrated. Keep every output low for slightly longer so all
+        // ESCs return to detection before the new waveform starts.
+        sleep_ms(ESC_PROTOCOL_DETECTION_RESET_MS);
+    }
+
     current_config = config;
 
     if (current_config.protocol == THRUSTER_PROTOCOL_DSHOT) {
-        init_dshot_protocol(current_config.dshot_speed);
+        protocol_ready = init_dshot_protocol(current_config.dshot_speed, entering_dshot);
     } else {
         init_pwm_protocol();
+        protocol_ready = true;
     }
 
     runtime_config_received = true;
     comm_timed_out = true;
-    mcu_runtime_config_send_version(&current_config);
+    if (protocol_ready) {
+        mcu_runtime_config_send_version(&current_config);
+    } else {
+        log_warn("DShot transition waiting for telemetry from all motors");
+        log_missing_dshot_telemetry();
+    }
 }
 
 static void handle_command_packet(uint8_t *command_buf) {
@@ -167,6 +218,11 @@ static void handle_command_packet(uint8_t *command_buf) {
 
     if (!usb_parse_packet(command_buf, INPUT_PACKET_SIZE, command_values, NUM_MOTORS,
                           &last_comm_time)) {
+        return;
+    }
+
+    if (!protocol_ready) {
+        set_all_commands_neutral();
         return;
     }
 
@@ -193,7 +249,9 @@ static void handle_config_packet(uint8_t *config_buf) {
 
     if (runtime_config_received && new_config.protocol == current_config.protocol &&
         new_config.dshot_speed == current_config.dshot_speed) {
-        mcu_runtime_config_send_version(&current_config);
+        if (protocol_ready) {
+            mcu_runtime_config_send_version(&current_config);
+        }
         return;
     }
 
@@ -261,6 +319,11 @@ int main(void) {
             dshot_loop(&dshot_controller0);
             dshot_loop(&dshot_controller1);
             dshot_telemetry_usb_flush();
+            if (!protocol_ready && dshot_telemetry_ready()) {
+                protocol_ready = true;
+                mcu_runtime_config_send_version(&current_config);
+                log_info("DShot telemetry active on all motors; protocol transition ready");
+            }
         } else {
             for (int i = 0; i < NUM_MOTORS; ++i) {
                 pwm_set_throttle(&pwm_controller, i, pwm_translate_throttle(command_values[i]));

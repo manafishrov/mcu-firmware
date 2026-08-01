@@ -33,8 +33,10 @@ void dshot_enable_edt_if_idle(const uint16_t *thruster_values, bool *edt_enable_
                               struct dshot_controller *controller1);
 void dshot_send_commands(uint16_t *thruster_values, struct dshot_controller *controller0,
                          struct dshot_controller *controller1);
-void dshot_wait_for_telemetry(struct dshot_controller *controller0,
+bool dshot_wait_for_telemetry(struct dshot_controller *controller0,
                               struct dshot_controller *controller1);
+uint8_t dshot_missing_telemetry_mask(struct dshot_controller *controller0,
+                                     struct dshot_controller *controller1);
 bool dshot_quality_report_due(absolute_time_t *next_quality_report_time,
                               uint32_t quality_report_interval_ms, absolute_time_t now);
 const char *dshot_dominant_failure_name(const struct dshot_statistics *stats);
