@@ -113,6 +113,7 @@ struct dshot_motor {
     uint16_t last_throttle_value; /* Cached throttle value to skip redundant frame computation */
     uint16_t current_command;     /* Active DShot command (0 = none) */
     uint8_t command_counter;      /* Remaining command repetitions */
+    bool edt_enabled;             /* ESC acknowledged extended telemetry */
     uint8_t telemetry_types;      /* Bitmask of received EDT types (1 << type) */
     uint32_t telemetry_data[DSHOT_TELEMETRY_TYPE_COUNT]; /* Latest value per type */
     uint32_t max_temp;                                   /* Peak temperature observed */
@@ -129,9 +130,8 @@ struct dshot_controller {
     uint8_t sm;
     uint8_t pin;
     uint8_t num_channels;
-    uint8_t channel;        /* Currently active channel for PIO multiplexing */
-    uint16_t speed;         /* DShot speed in kbit/s (e.g. 600) */
-    bool edt_always_decode; /* Attempt EDT decode before EDT handshake completes */
+    uint8_t channel; /* Currently active channel for PIO multiplexing */
+    uint16_t speed;  /* DShot speed in kbit/s (e.g. 600) */
     struct dshot_motor motor[DSHOT_MAX_CHANNELS];
     absolute_time_t command_last_time;
 

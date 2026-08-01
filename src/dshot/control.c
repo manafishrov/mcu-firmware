@@ -99,7 +99,7 @@ void dshot_enable_edt_if_idle(const uint16_t *thruster_values, bool *edt_enable_
         dshot_get_motor_controller(i, &ctrl, &channel, controller0, controller1);
         struct dshot_motor *motor = &ctrl->motor[channel];
 
-        if (motor->telemetry_types & DSHOT_EXTENDED_TELEMETRY_MASK) {
+        if (motor->edt_enabled) {
             edt_enable_scheduled[i] = false;
             continue;
         }
@@ -126,17 +126,32 @@ void dshot_send_commands(uint16_t *thruster_values, struct dshot_controller *con
     }
 }
 
-void dshot_wait_for_telemetry(struct dshot_controller *controller0,
+bool dshot_wait_for_telemetry(struct dshot_controller *controller0,
                               struct dshot_controller *controller1) {
     absolute_time_t deadline = delayed_by_ms(get_absolute_time(), 500);
-    while (!dshot_is_telemetry_active(controller0) || !dshot_is_telemetry_active(controller1)) {
+    while (dshot_missing_telemetry_mask(controller0, controller1) != 0) {
         dshot_loop(controller0);
         dshot_loop(controller1);
         dshot_telemetry_usb_flush();
         if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
-            break;
+            return false;
         }
     }
+    return true;
+}
+
+uint8_t dshot_missing_telemetry_mask(struct dshot_controller *controller0,
+                                     struct dshot_controller *controller1) {
+    uint8_t missing = 0;
+    for (int i = 0; i < NUM_MOTORS; ++i) {
+        struct dshot_controller *ctrl;
+        int channel;
+        dshot_get_motor_controller(i, &ctrl, &channel, controller0, controller1);
+        if ((ctrl->motor[channel].telemetry_types & (1u << DSHOT_TELEMETRY_TYPE_ERPM)) == 0) {
+            missing |= (uint8_t)(1u << i);
+        }
+    }
+    return missing;
 }
 
 bool dshot_quality_report_due(absolute_time_t *next_quality_report_time,

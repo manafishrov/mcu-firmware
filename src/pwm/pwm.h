@@ -24,7 +24,8 @@ struct pwm_controller {
     uint num_channels;
 };
 
-void pwm_controller_init(struct pwm_controller *controller, uint *pins, uint num_channels);
+void pwm_controller_init(struct pwm_controller *controller, uint *pins, uint num_channels,
+                         uint initial_value);
 void pwm_controller_deinit(struct pwm_controller *controller);
 
 /* Set pulse width in microseconds (typically 1000-2000us for ESCs) */

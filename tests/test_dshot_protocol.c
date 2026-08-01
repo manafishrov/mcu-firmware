@@ -78,6 +78,80 @@ static void test_decode_erpm_rejects_zero_period(void) {
     TEST_ASSERT_EQUAL_UINT32(DSHOT_TELEMETRY_INVALID, dshot_decode_erpm_telemetry_value(0x0200));
 }
 
+static void test_even_nibble_erpm_is_not_misclassified_before_edt_handshake(void) {
+    struct dshot_controller controller = {0};
+    uint32_t decoded = 0;
+    enum dshot_telemetry_type type = DSHOT_TELEMETRY_TYPE_COUNT;
+
+    dshot_decode_telemetry_value(&controller, 0x0201, &decoded, &type);
+
+    TEST_ASSERT_EQUAL_INT(DSHOT_TELEMETRY_TYPE_ERPM, type);
+    TEST_ASSERT_EQUAL_UINT32(300000, decoded);
+}
+
+static void test_edt_handshake_enables_extended_frame_decoding(void) {
+    struct dshot_controller controller = {0};
+    struct dshot_motor *motor = &controller.motor[0];
+    uint32_t decoded = 0;
+    enum dshot_telemetry_type type = DSHOT_TELEMETRY_TYPE_COUNT;
+
+    motor->current_command = DSHOT_EXTENDED_TELEMETRY_ENABLE;
+    TEST_ASSERT_TRUE(dshot_handle_edt_handshake(motor, 0x0E00));
+    TEST_ASSERT_TRUE(motor->edt_enabled);
+
+    dshot_decode_telemetry_value(&controller, 0x022A, &decoded, &type);
+
+    TEST_ASSERT_EQUAL_INT(DSHOT_TELEMETRY_TYPE_TEMPERATURE, type);
+    TEST_ASSERT_EQUAL_UINT32(42, decoded);
+}
+
+static void test_edt_version_response_accepts_nonzero_version(void) {
+    struct dshot_motor motor = {.current_command = DSHOT_EXTENDED_TELEMETRY_ENABLE};
+
+    TEST_ASSERT_TRUE(dshot_handle_edt_handshake(&motor, 0x0E21));
+    TEST_ASSERT_TRUE(motor.edt_enabled);
+}
+
+static void test_edt_marker_is_ignored_without_enable_command(void) {
+    struct dshot_motor motor = {0};
+
+    TEST_ASSERT_FALSE(dshot_handle_edt_handshake(&motor, 0x0E00));
+    TEST_ASSERT_FALSE(motor.edt_enabled);
+}
+
+static void test_non_edt_marker_is_ignored_during_enable_command(void) {
+    struct dshot_motor motor = {.current_command = DSHOT_EXTENDED_TELEMETRY_ENABLE};
+
+    TEST_ASSERT_FALSE(dshot_handle_edt_handshake(&motor, 0x0D00));
+    TEST_ASSERT_FALSE(motor.edt_enabled);
+}
+
+static void test_status_frame_decodes_after_edt_handshake(void) {
+    struct dshot_controller controller = {0};
+    struct dshot_motor *motor = &controller.motor[0];
+    uint32_t decoded = 0;
+    enum dshot_telemetry_type type = DSHOT_TELEMETRY_TYPE_COUNT;
+
+    motor->edt_enabled = true;
+    dshot_decode_telemetry_value(&controller, 0x0E05, &decoded, &type);
+
+    TEST_ASSERT_EQUAL_INT(DSHOT_TELEMETRY_TYPE_STATE_EVENTS, type);
+    TEST_ASSERT_EQUAL_UINT32(5, decoded);
+}
+
+static void test_disabling_edt_clears_acknowledgement_and_received_types(void) {
+    struct dshot_controller controller = {.num_channels = 1};
+    struct dshot_motor *motor = &controller.motor[0];
+
+    motor->edt_enabled = true;
+    motor->telemetry_types = UINT8_MAX;
+
+    dshot_command(&controller, 0, DSHOT_EXTENDED_TELEMETRY_DISABLE, 10);
+
+    TEST_ASSERT_FALSE(motor->edt_enabled);
+    TEST_ASSERT_EQUAL_UINT8(0, motor->telemetry_types);
+}
+
 static void test_decode_gcr_word_accepts_valid_encoded_value(void) {
     uint32_t decoded = 0;
     uint16_t final_word = build_final_word(0x0ABC);
@@ -176,6 +250,13 @@ void test_dshot_protocol(void) {
     RUN_TEST(test_decode_erpm_decodes_known_mantissa_value);
     RUN_TEST(test_decode_erpm_decodes_period_one_and_six_hundred);
     RUN_TEST(test_decode_erpm_rejects_zero_period);
+    RUN_TEST(test_even_nibble_erpm_is_not_misclassified_before_edt_handshake);
+    RUN_TEST(test_edt_handshake_enables_extended_frame_decoding);
+    RUN_TEST(test_edt_version_response_accepts_nonzero_version);
+    RUN_TEST(test_edt_marker_is_ignored_without_enable_command);
+    RUN_TEST(test_non_edt_marker_is_ignored_during_enable_command);
+    RUN_TEST(test_status_frame_decodes_after_edt_handshake);
+    RUN_TEST(test_disabling_edt_clears_acknowledgement_and_received_types);
     RUN_TEST(test_decode_gcr_word_accepts_valid_encoded_value);
     RUN_TEST(test_decode_gcr_word_rejects_invalid_symbol);
     RUN_TEST(test_decode_gcr_word_rejects_bad_crc);
