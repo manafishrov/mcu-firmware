@@ -15,11 +15,9 @@
 #define AM32_BIT_TIME_US 52u
 #define AM32_HALF_BIT_TIME_US 26u
 #define AM32_ACK 0x30u
-#define AM32_KEEP_ALIVE_REPLY 0xC1u
 #define AM32_COMMAND_RUN 0x00u
 #define AM32_COMMAND_PROGRAM_FLASH 0x01u
 #define AM32_COMMAND_READ_FLASH 0x03u
-#define AM32_COMMAND_KEEP_ALIVE 0xFDu
 #define AM32_COMMAND_SET_BUFFER 0xFEu
 #define AM32_COMMAND_SET_ADDRESS 0xFFu
 #define AM32_PROGRAM_CHUNK_SIZE 256u
@@ -204,19 +202,6 @@ static bool target_matches(const uint8_t *device_info) {
            device_info[7] >= AM32_BOOTLOADER_PROTOCOL_MIN && device_info[8] == AM32_ACK;
 }
 
-static void keep_alive(uint pin) {
-    uint8_t packet[4] = {AM32_COMMAND_KEEP_ALIVE, 0, 0, 0};
-    append_crc(packet, 2);
-    send_bytes(pin, packet, sizeof(packet));
-    (void)receive_expected(pin, AM32_KEEP_ALIVE_REPLY, 3000);
-}
-
-static void keep_programmed_alive(uint8_t programmed_count) {
-    for (uint8_t motor = 0; motor < programmed_count; ++motor) {
-        keep_alive(motor_pins[motor]);
-    }
-}
-
 static void run_all(void) {
     const uint8_t run_command[4] = {AM32_COMMAND_RUN, 0, 0, 0};
     for (uint8_t motor = 0; motor < NUM_MOTORS; ++motor) {
@@ -228,7 +213,6 @@ static void run_all(void) {
 static bool wait_for_motor(uint8_t motor, esc_firmware_update_error_t *error) {
     uint8_t device_info[AM32_DEVICE_INFO_SIZE];
     for (uint8_t attempt = 0; attempt < AM32_CONNECT_ATTEMPTS; ++attempt) {
-        keep_programmed_alive(motor);
         if (connect_motor(motor_pins[motor], device_info)) {
             if (!target_matches(device_info)) {
                 *error = ESC_FIRMWARE_UPDATE_ERROR_WRONG_TARGET;
@@ -272,6 +256,9 @@ bool am32_bootloader_flash_all(const uint8_t *image, uint16_t image_size,
 
     esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_ENTERING_BOOTLOADER, UINT8_MAX,
                                     ESC_FIRMWARE_UPDATE_ERROR_NONE, 0);
+    // The application resets after two seconds without DShot. Its bootloader
+    // then waits indefinitely while the UART line remains idle high, so all
+    // eight bootloaders can be entered together before programming begins.
     sleep_ms(AM32_BOOTLOADER_ENTRY_MS);
 
     for (uint8_t motor = 0; motor < NUM_MOTORS; ++motor) {
@@ -289,7 +276,6 @@ bool am32_bootloader_flash_all(const uint8_t *image, uint16_t image_size,
             if (!program_chunk(motor, &image[offset], offset, length, error)) {
                 return false;
             }
-            keep_programmed_alive(motor);
             esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_MOTOR_BEGIN, motor,
                                             ESC_FIRMWARE_UPDATE_ERROR_NONE,
                                             (uint32_t)offset + length);
