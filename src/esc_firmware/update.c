@@ -179,4 +179,5 @@ void esc_firmware_update_send_status(esc_firmware_update_status_t status, uint8_
     packet[ESC_FIRMWARE_USB_STATUS_PACKET_SIZE - 1] =
         usb_calculate_checksum(packet, ESC_FIRMWARE_USB_STATUS_PACKET_SIZE - 1);
     fwrite(packet, 1, sizeof(packet), stdout);
+    (void)fflush(stdout);
 }

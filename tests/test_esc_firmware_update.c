@@ -128,10 +128,41 @@ static void test_esc_firmware_update_rejects_non_thumb_reset_handler(void) {
     TEST_ASSERT_EQUAL(ESC_FIRMWARE_UPDATE_ERROR_INVALID_IMAGE, error);
 }
 
+static void test_esc_firmware_update_rejects_image_crc_mismatch(void) {
+    static uint8_t image[ESC_FIRMWARE_IMAGE_SIZE];
+    uint8_t control[ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE];
+    make_valid_image(image);
+    make_control_packet(control, ESC_FIRMWARE_UPDATE_COMMAND_BEGIN, image);
+    image[16] ^= 1;
+
+    esc_firmware_update_command_t command;
+    esc_firmware_update_error_t error;
+    TEST_ASSERT_TRUE(esc_firmware_update_parse_control(control, &command, &error));
+    receive_image(image);
+    TEST_ASSERT_FALSE(esc_firmware_update_validate_image(&error));
+    TEST_ASSERT_EQUAL(ESC_FIRMWARE_UPDATE_ERROR_IMAGE_CRC, error);
+}
+
+static void test_esc_firmware_update_rejects_commit_before_upload_completes(void) {
+    static uint8_t image[ESC_FIRMWARE_IMAGE_SIZE];
+    uint8_t control[ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE];
+    make_valid_image(image);
+    make_control_packet(control, ESC_FIRMWARE_UPDATE_COMMAND_BEGIN, image);
+
+    esc_firmware_update_command_t command;
+    esc_firmware_update_error_t error;
+    TEST_ASSERT_TRUE(esc_firmware_update_parse_control(control, &command, &error));
+    make_control_packet(control, ESC_FIRMWARE_UPDATE_COMMAND_COMMIT, image);
+    TEST_ASSERT_FALSE(esc_firmware_update_parse_control(control, &command, &error));
+    TEST_ASSERT_EQUAL(ESC_FIRMWARE_UPDATE_ERROR_BAD_SEQUENCE, error);
+}
+
 void test_esc_firmware_update(void) {
     RUN_TEST(test_esc_firmware_crc32_matches_standard_vector);
     RUN_TEST(test_esc_firmware_update_accepts_complete_target_image);
     RUN_TEST(test_esc_firmware_update_rejects_out_of_order_chunk);
     RUN_TEST(test_esc_firmware_update_rejects_reset_handler_in_eeprom);
     RUN_TEST(test_esc_firmware_update_rejects_non_thumb_reset_handler);
+    RUN_TEST(test_esc_firmware_update_rejects_image_crc_mismatch);
+    RUN_TEST(test_esc_firmware_update_rejects_commit_before_upload_completes);
 }

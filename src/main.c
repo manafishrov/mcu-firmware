@@ -170,9 +170,13 @@ static void service_esc_version_discovery(void) {
     if (!esc_version_discovery_active) {
         return;
     }
-    if (dshot_telemetry_usb_all_esc_versions_reported() ||
-        esc_version_discovery_attempts >= ESC_VERSION_DISCOVERY_ATTEMPTS) {
+    if (dshot_telemetry_usb_all_esc_versions_reported()) {
         esc_version_discovery_active = false;
+        return;
+    }
+    if (esc_version_discovery_attempts >= ESC_VERSION_DISCOVERY_ATTEMPTS) {
+        esc_version_discovery_active = false;
+        log_warn("ESC firmware version discovery ended before every ESC reported");
         return;
     }
     if (!all_commands_neutral()) {
@@ -247,6 +251,7 @@ static void apply_runtime_config(mcu_runtime_config_t config) {
         sleep_ms(ESC_PROTOCOL_DETECTION_RESET_MS);
     }
 
+    esc_firmware_update_reset();
     current_config = config;
 
     if (current_config.protocol == THRUSTER_PROTOCOL_DSHOT) {
@@ -363,6 +368,13 @@ static void handle_esc_firmware_control_packet(const uint8_t *packet) {
         return;
     }
 
+    if (!runtime_config_received || current_config.protocol != THRUSTER_PROTOCOL_DSHOT ||
+        (!esc_firmware_recovery_mode && (!dshot_initialized || !protocol_ready))) {
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX,
+                                        ESC_FIRMWARE_UPDATE_ERROR_NOT_DSHOT, 0);
+        esc_firmware_update_reset();
+        return;
+    }
     if (!esc_firmware_update_validate_image(&error)) {
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX, error,
                                         esc_firmware_update_received_size());
@@ -446,16 +458,12 @@ int main(void) {
 
         if (packet_kind == USB_PACKET_COMMAND) {
             handle_command_packet(command_buf);
-            readers[0].index = 0;
         } else if (packet_kind == USB_PACKET_CONFIG) {
             handle_config_packet(config_buf);
-            readers[1].index = 0;
         } else if (packet_kind == USB_PACKET_ESC_FIRMWARE_CONTROL) {
             handle_esc_firmware_control_packet(esc_firmware_control_buf);
-            readers[2].index = 0;
         } else if (packet_kind == USB_PACKET_ESC_FIRMWARE_DATA) {
             handle_esc_firmware_data_packet(esc_firmware_data_buf);
-            readers[3].index = 0;
         }
 
         usb_check_timeout(last_comm_time, command_values, NUM_MOTORS, CMD_THROTTLE_NEUTRAL,

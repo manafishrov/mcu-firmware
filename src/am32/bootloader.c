@@ -143,7 +143,8 @@ static bool set_address(uint pin, uint16_t address) {
 
 static bool set_buffer(uint pin, const uint8_t *data, uint16_t length) {
     uint8_t command[6] = {
-        AM32_COMMAND_SET_BUFFER, 0, length == 256 ? 1u : 0u, (uint8_t)length, 0, 0,
+        AM32_COMMAND_SET_BUFFER, 0, length == AM32_PROGRAM_CHUNK_SIZE ? 1u : 0u,
+        (uint8_t)length,         0, 0,
     };
     append_crc(command, 4);
     send_bytes(pin, command, sizeof(command));

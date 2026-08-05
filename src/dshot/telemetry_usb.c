@@ -151,6 +151,10 @@ bool dshot_telemetry_usb_decode_esc_version(esc_version_decoder_t *decoder,
         return false;
     }
     if (type == DSHOT_TELEMETRY_TYPE_DEBUG3 && decoder->stage == 2) {
+        if (value == 0 || value > UINT8_MAX) {
+            decoder->stage = 0;
+            return false;
+        }
         decoder->value[decoder->received++] = (char)value;
         if (decoder->received == decoder->length) {
             decoder->stage = 3;

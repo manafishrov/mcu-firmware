@@ -30,14 +30,11 @@ usb_packet_kind_t usb_poll(usb_packet_reader_t *readers, size_t reader_count) {
         }
 
         if (active_reader != NULL) {
-            if (active_reader->index < active_reader->packet_size) {
-                active_reader->buffer[active_reader->index++] = byte;
-            } else {
-                active_reader->index = 0;
-            }
-
+            active_reader->buffer[active_reader->index++] = byte;
             if (active_reader->index >= active_reader->packet_size) {
-                return active_reader->kind;
+                usb_packet_kind_t kind = active_reader->kind;
+                active_reader->index = 0;
+                return kind;
             }
         } else {
             for (size_t i = 0; i < reader_count; ++i) {

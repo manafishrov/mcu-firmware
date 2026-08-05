@@ -1,6 +1,6 @@
 #include "support/runtime_config_host.h"
-#include "support/usb_comm_host.h"
 #include "unity/unity.h"
+#include "usb_comm.h"
 
 static void test_normalize_dshot_speed_accepts_supported_values(void) {
     TEST_ASSERT_EQUAL_UINT16(150, mcu_runtime_config_normalize_dshot_speed(150));
