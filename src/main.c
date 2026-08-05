@@ -1,6 +1,8 @@
+#include "am32/bootloader.h"
 #include "dshot/control.h"
 #include "dshot/dshot.h"
 #include "dshot/telemetry_usb.h"
+#include "esc_firmware/update.h"
 #include "log.h"
 #include "motors.h"
 #include "pwm/control.h"
@@ -24,6 +26,8 @@
 #define QUALITY_REPORT_INTERVAL_MS 100
 #define ESC_PROTOCOL_DETECTION_RESET_MS 2100
 #define PWM_DETECTION_SETTLE_MS 1000
+#define ESC_VERSION_DISCOVERY_ATTEMPTS 3
+#define ESC_VERSION_DISCOVERY_RETRY_MS 250
 
 static uint16_t command_values[NUM_MOTORS] = {CMD_THROTTLE_NEUTRAL};
 static absolute_time_t last_comm_time;
@@ -43,6 +47,13 @@ static bool pwm_initialized = false;
 static bool dshot_initialized = false;
 static bool runtime_config_received = false;
 static bool protocol_ready = false;
+// A failed update can leave one or more ESCs partially programmed. Keep every
+// ESC in the bootloader until a complete retry succeeds; starting DShot here
+// could execute an incomplete application.
+static bool esc_firmware_recovery_mode = false;
+static bool esc_version_discovery_active = false;
+static uint8_t esc_version_discovery_attempts = 0;
+static absolute_time_t next_esc_version_discovery_time;
 
 static mcu_runtime_config_t current_config = {0};
 
@@ -68,6 +79,15 @@ static void set_all_commands_neutral(void) {
     for (int i = 0; i < NUM_MOTORS; ++i) {
         command_values[i] = CMD_THROTTLE_NEUTRAL;
     }
+}
+
+static bool all_commands_neutral(void) {
+    for (int i = 0; i < NUM_MOTORS; ++i) {
+        if (command_values[i] != CMD_THROTTLE_NEUTRAL) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static void deinit_protocol(thruster_protocol_t protocol) {
@@ -134,6 +154,41 @@ static bool dshot_telemetry_ready(void) {
            dshot_is_telemetry_active(&dshot_controller1);
 }
 
+static void request_esc_firmware_versions_if_idle(void) {
+    if (current_config.protocol != THRUSTER_PROTOCOL_DSHOT || !dshot_initialized ||
+        !protocol_ready || !all_commands_neutral()) {
+        return;
+    }
+
+    dshot_telemetry_usb_begin_esc_version_discovery();
+    esc_version_discovery_active = true;
+    esc_version_discovery_attempts = 0;
+    next_esc_version_discovery_time = get_absolute_time();
+}
+
+static void service_esc_version_discovery(void) {
+    if (!esc_version_discovery_active) {
+        return;
+    }
+    if (dshot_telemetry_usb_all_esc_versions_reported() ||
+        esc_version_discovery_attempts >= ESC_VERSION_DISCOVERY_ATTEMPTS) {
+        esc_version_discovery_active = false;
+        return;
+    }
+    if (!all_commands_neutral()) {
+        return;
+    }
+
+    absolute_time_t now = get_absolute_time();
+    if (absolute_time_diff_us(next_esc_version_discovery_time, now) < 0) {
+        return;
+    }
+    dshot_send_command_to_all(&dshot_controller0, &dshot_controller1,
+                              DSHOT_EXTENDED_TELEMETRY_ENABLE, 10);
+    esc_version_discovery_attempts++;
+    next_esc_version_discovery_time = delayed_by_ms(now, ESC_VERSION_DISCOVERY_RETRY_MS);
+}
+
 static void log_missing_dshot_telemetry(void) {
     uint8_t missing = dshot_missing_telemetry_mask(&dshot_controller0, &dshot_controller1);
     for (int i = 0; i < NUM_MOTORS; ++i) {
@@ -184,7 +239,7 @@ static void apply_runtime_config(mcu_runtime_config_t config) {
     }
 
     if (reset_detector) {
-        // AM32 keeps the detected input decoder until it has seen two seconds
+        // The ESC keeps the detected input decoder until it has seen two seconds
         // without a valid signal while unarmed. This applies both to protocol
         // changes and to DShot baud-rate changes after its frame timing has
         // been calibrated. Keep every output low for slightly longer so all
@@ -205,6 +260,7 @@ static void apply_runtime_config(mcu_runtime_config_t config) {
     comm_timed_out = true;
     if (protocol_ready) {
         mcu_runtime_config_send_version(&current_config);
+        request_esc_firmware_versions_if_idle();
     } else {
         log_warn("DShot transition waiting for telemetry from all motors");
         log_missing_dshot_telemetry();
@@ -247,23 +303,21 @@ static void handle_config_packet(uint8_t *config_buf) {
         return;
     }
 
+    if (esc_firmware_recovery_mode) {
+        log_warn("Ignoring runtime config while ESC firmware recovery is required");
+        return;
+    }
+
     if (runtime_config_received && new_config.protocol == current_config.protocol &&
         new_config.dshot_speed == current_config.dshot_speed) {
         if (protocol_ready) {
             mcu_runtime_config_send_version(&current_config);
+            request_esc_firmware_versions_if_idle();
         }
         return;
     }
 
-    bool all_neutral = true;
-    for (int i = 0; i < NUM_MOTORS; ++i) {
-        if (command_values[i] != CMD_THROTTLE_NEUTRAL) {
-            all_neutral = false;
-            break;
-        }
-    }
-
-    if (!all_neutral) {
+    if (!all_commands_neutral()) {
         log_warn("Ignoring protocol change while thrusters active");
         mcu_runtime_config_send_version(&current_config);
         return;
@@ -273,6 +327,96 @@ static void handle_config_packet(uint8_t *config_buf) {
     log_infof("Active thruster protocol: %s @ %u",
               mcu_runtime_config_protocol_name(current_config.protocol),
               current_config.dshot_speed);
+}
+
+static void handle_esc_firmware_control_packet(const uint8_t *packet) {
+    esc_firmware_update_command_t command;
+    esc_firmware_update_error_t error;
+    if (!esc_firmware_update_parse_control(packet, &command, &error)) {
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX, error, 0);
+        return;
+    }
+
+    if (command == ESC_FIRMWARE_UPDATE_COMMAND_ABORT) {
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_ABORTED, UINT8_MAX,
+                                        ESC_FIRMWARE_UPDATE_ERROR_NONE, 0);
+        return;
+    }
+
+    if (command == ESC_FIRMWARE_UPDATE_COMMAND_BEGIN) {
+        if (!runtime_config_received || current_config.protocol != THRUSTER_PROTOCOL_DSHOT ||
+            (!esc_firmware_recovery_mode && (!dshot_initialized || !protocol_ready))) {
+            esc_firmware_update_reset();
+            esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX,
+                                            ESC_FIRMWARE_UPDATE_ERROR_NOT_DSHOT, 0);
+            return;
+        }
+        if (!all_commands_neutral()) {
+            esc_firmware_update_reset();
+            esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX,
+                                            ESC_FIRMWARE_UPDATE_ERROR_THRUSTERS_ACTIVE, 0);
+            return;
+        }
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_READY, UINT8_MAX,
+                                        ESC_FIRMWARE_UPDATE_ERROR_NONE,
+                                        esc_firmware_update_image_size());
+        return;
+    }
+
+    if (!esc_firmware_update_validate_image(&error)) {
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX, error,
+                                        esc_firmware_update_received_size());
+        esc_firmware_update_reset();
+        return;
+    }
+    if (!all_commands_neutral()) {
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX,
+                                        ESC_FIRMWARE_UPDATE_ERROR_THRUSTERS_ACTIVE, 0);
+        esc_firmware_update_reset();
+        return;
+    }
+
+    if (!esc_firmware_recovery_mode) {
+        hold_neutral_before_switch();
+    }
+    protocol_ready = false;
+    deinit_protocol(THRUSTER_PROTOCOL_DSHOT);
+    esc_version_discovery_active = false;
+    esc_firmware_recovery_mode = true;
+
+    uint8_t failed_motor = UINT8_MAX;
+    bool flashed = am32_bootloader_flash_all(
+        esc_firmware_update_image(), esc_firmware_update_image_size(), &error, &failed_motor);
+
+    if (flashed) {
+        esc_firmware_recovery_mode = false;
+        protocol_ready = init_dshot_protocol(current_config.dshot_speed, false);
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_COMPLETE, UINT8_MAX,
+                                        ESC_FIRMWARE_UPDATE_ERROR_NONE,
+                                        esc_firmware_update_image_size());
+        request_esc_firmware_versions_if_idle();
+    } else {
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, failed_motor, error, 0);
+        log_warn("ESC firmware update failed; keeping ESCs in bootloader for a safe retry");
+    }
+    if (flashed && !protocol_ready) {
+        log_warn("DShot telemetry did not recover on every motor after ESC firmware update");
+        log_missing_dshot_telemetry();
+    }
+    esc_firmware_update_reset();
+}
+
+static void handle_esc_firmware_data_packet(const uint8_t *packet) {
+    esc_firmware_update_error_t error;
+    if (!esc_firmware_update_receive_data(packet, &error)) {
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX, error,
+                                        esc_firmware_update_received_size());
+        esc_firmware_update_reset();
+        return;
+    }
+    esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_RECEIVED, UINT8_MAX,
+                                    ESC_FIRMWARE_UPDATE_ERROR_NONE,
+                                    esc_firmware_update_received_size());
 }
 
 int main(void) {
@@ -285,26 +429,43 @@ int main(void) {
 
     static uint8_t command_buf[INPUT_PACKET_SIZE];
     static uint8_t config_buf[USB_CONFIG_PACKET_SIZE];
-    static size_t command_idx = 0;
-    static size_t config_idx = 0;
+    static uint8_t esc_firmware_control_buf[ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE];
+    static uint8_t esc_firmware_data_buf[ESC_FIRMWARE_USB_DATA_PACKET_SIZE];
+    usb_packet_reader_t readers[] = {
+        {USB_INPUT_START_BYTE, command_buf, INPUT_PACKET_SIZE, 0, USB_PACKET_COMMAND},
+        {USB_CONFIG_START_BYTE, config_buf, USB_CONFIG_PACKET_SIZE, 0, USB_PACKET_CONFIG},
+        {ESC_FIRMWARE_USB_CONTROL_START_BYTE, esc_firmware_control_buf,
+         ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE, 0, USB_PACKET_ESC_FIRMWARE_CONTROL},
+        {ESC_FIRMWARE_USB_DATA_START_BYTE, esc_firmware_data_buf, ESC_FIRMWARE_USB_DATA_PACKET_SIZE,
+         0, USB_PACKET_ESC_FIRMWARE_DATA},
+    };
+    esc_firmware_update_reset();
 
     while (true) {
-        usb_packet_kind_t packet_kind =
-            usb_poll_multi(command_buf, INPUT_PACKET_SIZE, &command_idx, config_buf,
-                           USB_CONFIG_PACKET_SIZE, &config_idx);
+        usb_packet_kind_t packet_kind = usb_poll(readers, sizeof(readers) / sizeof(readers[0]));
 
         if (packet_kind == USB_PACKET_COMMAND) {
             handle_command_packet(command_buf);
-            command_idx = 0;
+            readers[0].index = 0;
         } else if (packet_kind == USB_PACKET_CONFIG) {
             handle_config_packet(config_buf);
-            config_idx = 0;
+            readers[1].index = 0;
+        } else if (packet_kind == USB_PACKET_ESC_FIRMWARE_CONTROL) {
+            handle_esc_firmware_control_packet(esc_firmware_control_buf);
+            readers[2].index = 0;
+        } else if (packet_kind == USB_PACKET_ESC_FIRMWARE_DATA) {
+            handle_esc_firmware_data_packet(esc_firmware_data_buf);
+            readers[3].index = 0;
         }
 
         usb_check_timeout(last_comm_time, command_values, NUM_MOTORS, CMD_THROTTLE_NEUTRAL,
-                          &command_idx, &comm_timed_out);
+                          &readers[0].index, &comm_timed_out);
 
         if (!runtime_config_received) {
+            continue;
+        }
+
+        if (esc_firmware_recovery_mode) {
             continue;
         }
 
@@ -312,6 +473,7 @@ int main(void) {
             dshot_send_commands(command_values, &dshot_controller0, &dshot_controller1);
             dshot_enable_edt_if_idle(command_values, edt_enable_scheduled, edt_enable_time,
                                      &dshot_controller0, &dshot_controller1);
+            service_esc_version_discovery();
             if (dshot_quality_report_due(&next_quality_report_time, QUALITY_REPORT_INTERVAL_MS,
                                          get_absolute_time())) {
                 send_quality_reports();
@@ -322,6 +484,7 @@ int main(void) {
             if (!protocol_ready && dshot_telemetry_ready()) {
                 protocol_ready = true;
                 mcu_runtime_config_send_version(&current_config);
+                request_esc_firmware_versions_if_idle();
                 log_info("DShot telemetry active on all motors; protocol transition ready");
             }
         } else {

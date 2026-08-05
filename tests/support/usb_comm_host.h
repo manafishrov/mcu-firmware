@@ -15,12 +15,20 @@ typedef enum {
     USB_PACKET_NONE = 0,
     USB_PACKET_COMMAND,
     USB_PACKET_CONFIG,
+    USB_PACKET_ESC_FIRMWARE_CONTROL,
+    USB_PACKET_ESC_FIRMWARE_DATA,
 } usb_packet_kind_t;
 
+typedef struct {
+    uint8_t start_byte;
+    uint8_t *buffer;
+    size_t packet_size;
+    size_t index;
+    usb_packet_kind_t kind;
+} usb_packet_reader_t;
+
 uint8_t usb_calculate_checksum(const uint8_t *data, size_t len);
-usb_packet_kind_t usb_poll_multi(uint8_t *command_buf, size_t command_packet_size,
-                                 size_t *command_idx, uint8_t *config_buf,
-                                 size_t config_packet_size, size_t *config_idx);
+usb_packet_kind_t usb_poll(usb_packet_reader_t *readers, size_t reader_count);
 bool usb_parse_packet(const uint8_t *usb_buf, size_t packet_size, uint16_t *raw_values,
                       int num_motors, absolute_time_t *last_comm_time);
 void usb_check_timeout(absolute_time_t last_comm_time, uint16_t *thruster_values, int num_motors,
