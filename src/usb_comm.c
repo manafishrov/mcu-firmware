@@ -16,39 +16,34 @@ uint8_t usb_calculate_checksum(const uint8_t *data, size_t len) {
     return checksum;
 }
 
-usb_packet_kind_t usb_poll_multi(uint8_t *command_buf, size_t command_packet_size,
-                                 size_t *command_idx, uint8_t *config_buf,
-                                 size_t config_packet_size, size_t *config_idx) {
+usb_packet_kind_t usb_poll(usb_packet_reader_t *readers, size_t reader_count) {
     int c = getchar_timeout_us(0);
     while (c != PICO_ERROR_TIMEOUT) {
         uint8_t byte = (uint8_t)c;
+        usb_packet_reader_t *active_reader = NULL;
 
-        if (*command_idx > 0) {
-            if (*command_idx < command_packet_size) {
-                command_buf[(*command_idx)++] = byte;
-            } else {
-                *command_idx = 0;
+        for (size_t i = 0; i < reader_count; ++i) {
+            if (readers[i].index > 0) {
+                active_reader = &readers[i];
+                break;
             }
+        }
 
-            if (*command_idx >= command_packet_size) {
-                return USB_PACKET_COMMAND;
+        if (active_reader != NULL) {
+            active_reader->buffer[active_reader->index++] = byte;
+            if (active_reader->index >= active_reader->packet_size) {
+                usb_packet_kind_t kind = active_reader->kind;
+                active_reader->index = 0;
+                return kind;
             }
-        } else if (*config_idx > 0) {
-            if (*config_idx < config_packet_size) {
-                config_buf[(*config_idx)++] = byte;
-            } else {
-                *config_idx = 0;
+        } else {
+            for (size_t i = 0; i < reader_count; ++i) {
+                if (byte == readers[i].start_byte) {
+                    readers[i].buffer[0] = byte;
+                    readers[i].index = 1;
+                    break;
+                }
             }
-
-            if (*config_idx >= config_packet_size) {
-                return USB_PACKET_CONFIG;
-            }
-        } else if (byte == USB_INPUT_START_BYTE) {
-            command_buf[0] = byte;
-            *command_idx = 1;
-        } else if (byte == USB_CONFIG_START_BYTE) {
-            config_buf[0] = byte;
-            *config_idx = 1;
         }
 
         c = getchar_timeout_us(0);

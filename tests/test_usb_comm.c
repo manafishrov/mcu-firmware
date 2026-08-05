@@ -1,5 +1,5 @@
-#include "support/usb_comm_host.h"
 #include "unity/unity.h"
+#include "usb_comm.h"
 
 static void test_usb_calculate_checksum_returns_zero_for_empty_data(void) {
     TEST_ASSERT_EQUAL_HEX8(0x00, usb_calculate_checksum(0, 0));

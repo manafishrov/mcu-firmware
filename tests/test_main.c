@@ -6,6 +6,8 @@ extern void test_dshot_control(void);
 extern void test_dshot_protocol(void);
 extern void test_pwm_control(void);
 extern void test_pwm_driver(void);
+extern void test_esc_firmware_update(void);
+extern void test_esc_version_telemetry(void);
 
 void setUp(void) {}
 
@@ -19,5 +21,7 @@ int main(void) {
     test_dshot_protocol();
     test_pwm_control();
     test_pwm_driver();
+    test_esc_firmware_update();
+    test_esc_version_telemetry();
     return UNITY_END();
 }
