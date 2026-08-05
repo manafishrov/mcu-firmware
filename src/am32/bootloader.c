@@ -89,7 +89,6 @@ static bool receive_byte(uint pin, uint8_t *value, uint32_t timeout_us) {
         if (time_us_32() - start >= timeout_us) {
             return false;
         }
-        tight_loop_contents();
     }
 
     uint32_t interrupt_state = save_and_disable_interrupts();
