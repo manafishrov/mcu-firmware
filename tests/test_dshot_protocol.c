@@ -105,6 +105,18 @@ static void test_edt_handshake_enables_extended_frame_decoding(void) {
     TEST_ASSERT_EQUAL_UINT32(42, decoded);
 }
 
+static void test_edt_current_decodes_in_one_amp_increments(void) {
+    struct dshot_controller controller = {0};
+    uint32_t decoded = 0;
+    enum dshot_telemetry_type type = DSHOT_TELEMETRY_TYPE_COUNT;
+
+    controller.motor[0].edt_enabled = true;
+    dshot_decode_telemetry_value(&controller, 0x067B, &decoded, &type);
+
+    TEST_ASSERT_EQUAL_INT(DSHOT_TELEMETRY_TYPE_CURRENT, type);
+    TEST_ASSERT_EQUAL_UINT32(123, decoded);
+}
+
 static void test_edt_version_response_accepts_nonzero_version(void) {
     struct dshot_motor motor = {.current_command = DSHOT_EXTENDED_TELEMETRY_ENABLE};
 
@@ -252,6 +264,7 @@ void test_dshot_protocol(void) {
     RUN_TEST(test_decode_erpm_rejects_zero_period);
     RUN_TEST(test_even_nibble_erpm_is_not_misclassified_before_edt_handshake);
     RUN_TEST(test_edt_handshake_enables_extended_frame_decoding);
+    RUN_TEST(test_edt_current_decodes_in_one_amp_increments);
     RUN_TEST(test_edt_version_response_accepts_nonzero_version);
     RUN_TEST(test_edt_marker_is_ignored_without_enable_command);
     RUN_TEST(test_non_edt_marker_is_ignored_during_enable_command);
