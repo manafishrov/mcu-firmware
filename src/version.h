@@ -5,6 +5,8 @@
 #define MCU_FIRMWARE_VERSION_MINOR 0
 #define MCU_FIRMWARE_VERSION_PATCH 3
 
+#include <release_version.h>
+
 #ifndef MANAFISH_RELEASE_VERSION
 #define MANAFISH_RELEASE_VERSION "1.0.3"
 #endif
