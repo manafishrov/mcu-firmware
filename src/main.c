@@ -264,7 +264,7 @@ static void apply_runtime_config(mcu_runtime_config_t config) {
     runtime_config_received = true;
     comm_timed_out = true;
     if (protocol_ready) {
-        mcu_runtime_config_send_version(&current_config);
+        mcu_runtime_config_send_status(&current_config);
         request_esc_firmware_versions_if_idle();
     } else {
         log_warn("DShot transition waiting for telemetry from all motors");
@@ -316,7 +316,7 @@ static void handle_config_packet(uint8_t *config_buf) {
     if (runtime_config_received && new_config.protocol == current_config.protocol &&
         new_config.dshot_speed == current_config.dshot_speed) {
         if (protocol_ready) {
-            mcu_runtime_config_send_version(&current_config);
+            mcu_runtime_config_send_status(&current_config);
             request_esc_firmware_versions_if_idle();
         }
         return;
@@ -324,7 +324,7 @@ static void handle_config_packet(uint8_t *config_buf) {
 
     if (!all_commands_neutral()) {
         log_warn("Ignoring protocol change while thrusters active");
-        mcu_runtime_config_send_version(&current_config);
+        mcu_runtime_config_send_status(&current_config);
         return;
     }
 
@@ -491,7 +491,7 @@ int main(void) {
             dshot_telemetry_usb_flush();
             if (!protocol_ready && dshot_telemetry_ready()) {
                 protocol_ready = true;
-                mcu_runtime_config_send_version(&current_config);
+                mcu_runtime_config_send_status(&current_config);
                 request_esc_firmware_versions_if_idle();
                 log_info("DShot telemetry active on all motors; protocol transition ready");
             }

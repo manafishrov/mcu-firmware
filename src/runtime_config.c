@@ -87,7 +87,22 @@ size_t mcu_runtime_config_build_release_packet(uint8_t *packet, size_t packet_ca
     return packet_size;
 }
 
-void mcu_runtime_config_send_version(const mcu_runtime_config_t *config) {
+size_t mcu_runtime_config_build_status_packet(uint8_t *packet, size_t packet_capacity,
+                                              const mcu_runtime_config_t *config) {
+    if (packet == NULL || config == NULL ||
+        packet_capacity < USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE) {
+        return 0;
+    }
+
+    packet[0] = USB_RUNTIME_CONFIG_STATUS_START_BYTE;
+    packet[1] = (uint8_t)config->protocol;
+    packet[2] = (uint8_t)(config->dshot_speed & 0xFF);
+    packet[3] = (uint8_t)(config->dshot_speed >> 8);
+    packet[4] = usb_calculate_checksum(packet, USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE - 1);
+    return USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE;
+}
+
+void mcu_runtime_config_send_status(const mcu_runtime_config_t *config) {
     uint8_t release_packet[USB_RELEASE_VERSION_MAX_LENGTH + USB_RELEASE_VERSION_PACKET_OVERHEAD];
     const size_t release_packet_size =
         mcu_runtime_config_build_release_packet(release_packet, sizeof(release_packet));
@@ -95,15 +110,11 @@ void mcu_runtime_config_send_version(const mcu_runtime_config_t *config) {
         fwrite(release_packet, 1, release_packet_size, stdout);
     }
 
-    uint8_t packet[USB_VERSION_PACKET_SIZE];
-    packet[0] = USB_VERSION_START_BYTE;
-    packet[1] = MCU_FIRMWARE_VERSION_MAJOR;
-    packet[2] = MCU_FIRMWARE_VERSION_MINOR;
-    packet[3] = MCU_FIRMWARE_VERSION_PATCH;
-    packet[4] = (uint8_t)config->protocol;
-    packet[5] = (uint8_t)(config->dshot_speed & 0xFF);
-    packet[6] = (uint8_t)(config->dshot_speed >> 8);
-    packet[7] = usb_calculate_checksum(packet, USB_VERSION_PACKET_SIZE - 1);
-    fwrite(packet, 1, USB_VERSION_PACKET_SIZE, stdout);
+    uint8_t status_packet[USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE];
+    const size_t status_packet_size =
+        mcu_runtime_config_build_status_packet(status_packet, sizeof(status_packet), config);
+    if (status_packet_size > 0) {
+        fwrite(status_packet, 1, status_packet_size, stdout);
+    }
     fflush(stdout);
 }

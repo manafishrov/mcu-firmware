@@ -129,6 +129,26 @@ static void test_build_release_packet_rejects_short_buffer(void) {
     TEST_ASSERT_EQUAL_UINT(0, mcu_runtime_config_build_release_packet(packet, sizeof(packet)));
 }
 
+static void test_build_status_packet_reports_runtime_config_without_numeric_version(void) {
+    uint8_t packet[USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE] = {0};
+    const mcu_runtime_config_t config = {
+        .protocol = THRUSTER_PROTOCOL_DSHOT,
+        .dshot_speed = 600,
+    };
+    const uint8_t expected[] = {0xD5, 0x01, 0x58, 0x02, 0x8E};
+
+    const size_t packet_size =
+        mcu_runtime_config_build_status_packet(packet, sizeof(packet), &config);
+
+    TEST_ASSERT_EQUAL_UINT(USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE, packet_size);
+    TEST_ASSERT_EQUAL_HEX8(USB_RUNTIME_CONFIG_STATUS_START_BYTE, packet[0]);
+    TEST_ASSERT_EQUAL_UINT8(THRUSTER_PROTOCOL_DSHOT, packet[1]);
+    TEST_ASSERT_EQUAL_UINT16(600, (uint16_t)packet[2] | ((uint16_t)packet[3] << 8));
+    TEST_ASSERT_EQUAL_HEX8(usb_calculate_checksum(packet, packet_size - 1),
+                           packet[packet_size - 1]);
+    TEST_ASSERT_EQUAL_MEMORY(expected, packet, sizeof(expected));
+}
+
 static void test_parse_packet_rejects_bad_checksum(void) {
     const uint8_t packet[USB_CONFIG_PACKET_SIZE] = {
         USB_CONFIG_START_BYTE, THRUSTER_PROTOCOL_DSHOT, 0x58, 0x02, 0xFF,
@@ -157,6 +177,7 @@ void test_runtime_config(void) {
     RUN_TEST(test_parse_packet_rejects_wrong_start_byte);
     RUN_TEST(test_build_release_packet_reports_exact_release_identity);
     RUN_TEST(test_build_release_packet_rejects_short_buffer);
+    RUN_TEST(test_build_status_packet_reports_runtime_config_without_numeric_version);
     RUN_TEST(test_parse_packet_rejects_bad_checksum);
     RUN_TEST(test_protocol_name_returns_expected_strings);
 }

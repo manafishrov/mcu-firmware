@@ -17,8 +17,8 @@ typedef struct {
 
 #define USB_CONFIG_START_BYTE 0xC5
 #define USB_CONFIG_PACKET_SIZE 5
-#define USB_VERSION_START_BYTE 0xD5
-#define USB_VERSION_PACKET_SIZE 8
+#define USB_RUNTIME_CONFIG_STATUS_START_BYTE 0xD5
+#define USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE 5
 #define USB_RELEASE_VERSION_START_BYTE 0xD6
 #define USB_RELEASE_VERSION_MAX_LENGTH 48
 #define USB_RELEASE_VERSION_PACKET_OVERHEAD 3
@@ -31,6 +31,8 @@ bool mcu_runtime_config_requires_detector_reset(const mcu_runtime_config_t *curr
                                                 const mcu_runtime_config_t *next);
 const char *mcu_runtime_config_protocol_name(thruster_protocol_t protocol);
 size_t mcu_runtime_config_build_release_packet(uint8_t *packet, size_t packet_capacity);
-void mcu_runtime_config_send_version(const mcu_runtime_config_t *config);
+size_t mcu_runtime_config_build_status_packet(uint8_t *packet, size_t packet_capacity,
+                                              const mcu_runtime_config_t *config);
+void mcu_runtime_config_send_status(const mcu_runtime_config_t *config);
 
 #endif
