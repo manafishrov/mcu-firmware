@@ -109,6 +109,26 @@ static void test_parse_packet_rejects_wrong_start_byte(void) {
     TEST_ASSERT_FALSE(mcu_runtime_config_parse_packet(packet, sizeof(packet), &config));
 }
 
+static void test_build_release_packet_reports_exact_release_identity(void) {
+    uint8_t packet[USB_RELEASE_VERSION_MAX_LENGTH + USB_RELEASE_VERSION_PACKET_OVERHEAD] = {0};
+    const char expected[] = "1.0.2-rc.3";
+
+    const size_t packet_size = mcu_runtime_config_build_release_packet(packet, sizeof(packet));
+
+    TEST_ASSERT_EQUAL_UINT(sizeof(expected) - 1 + USB_RELEASE_VERSION_PACKET_OVERHEAD, packet_size);
+    TEST_ASSERT_EQUAL_HEX8(USB_RELEASE_VERSION_START_BYTE, packet[0]);
+    TEST_ASSERT_EQUAL_UINT8(sizeof(expected) - 1, packet[1]);
+    TEST_ASSERT_EQUAL_MEMORY(expected, &packet[2], sizeof(expected) - 1);
+    TEST_ASSERT_EQUAL_HEX8(usb_calculate_checksum(packet, packet_size - 1),
+                           packet[packet_size - 1]);
+}
+
+static void test_build_release_packet_rejects_short_buffer(void) {
+    uint8_t packet[4] = {0};
+
+    TEST_ASSERT_EQUAL_UINT(0, mcu_runtime_config_build_release_packet(packet, sizeof(packet)));
+}
+
 static void test_parse_packet_rejects_bad_checksum(void) {
     const uint8_t packet[USB_CONFIG_PACKET_SIZE] = {
         USB_CONFIG_START_BYTE, THRUSTER_PROTOCOL_DSHOT, 0x58, 0x02, 0xFF,
@@ -135,6 +155,8 @@ void test_runtime_config(void) {
     RUN_TEST(test_parse_packet_accepts_valid_packet_and_populates_config);
     RUN_TEST(test_parse_packet_rejects_wrong_size);
     RUN_TEST(test_parse_packet_rejects_wrong_start_byte);
+    RUN_TEST(test_build_release_packet_reports_exact_release_identity);
+    RUN_TEST(test_build_release_packet_rejects_short_buffer);
     RUN_TEST(test_parse_packet_rejects_bad_checksum);
     RUN_TEST(test_protocol_name_returns_expected_strings);
 }

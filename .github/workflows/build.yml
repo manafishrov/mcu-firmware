@@ -24,6 +24,10 @@ jobs:
             echo "Release tag is not SemVer: $tag" >&2
             exit 1
           fi
+          if [[ "${tag,,}" == *-rc* ]] && [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[1-9][0-9]*(\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+            echo "Release candidates must use vX.Y.Z-rc.N: $tag" >&2
+            exit 1
+          fi
           header_version="$(
             awk '
               /MCU_FIRMWARE_VERSION_MAJOR/ { major = $3 }
@@ -48,7 +52,7 @@ jobs:
         run: |
           mkdir -p build/pico
           cd build/pico
-          cmake -S "$GITHUB_WORKSPACE" -B . -DCMAKE_BUILD_TYPE=Release -DPICO_SDK_FETCH_FROM_GIT=ON
+          cmake -S "$GITHUB_WORKSPACE" -B . -DCMAKE_BUILD_TYPE=Release -DPICO_SDK_FETCH_FROM_GIT=ON -DMANAFISH_RELEASE_VERSION="${GITHUB_REF_NAME#v}"
 
       - name: Build Firmware for Pico
         run: |
@@ -59,7 +63,7 @@ jobs:
         run: |
           mkdir -p build/pico2
           cd build/pico2
-          cmake -S "$GITHUB_WORKSPACE" -B . -DCMAKE_BUILD_TYPE=Release -DPICO_SDK_FETCH_FROM_GIT=ON -DPICO_BOARD=pico2
+          cmake -S "$GITHUB_WORKSPACE" -B . -DCMAKE_BUILD_TYPE=Release -DPICO_SDK_FETCH_FROM_GIT=ON -DPICO_BOARD=pico2 -DMANAFISH_RELEASE_VERSION="${GITHUB_REF_NAME#v}"
 
       - name: Build Firmware for Pico 2
         run: |

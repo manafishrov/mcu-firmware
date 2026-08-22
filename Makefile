@@ -7,6 +7,7 @@ TEST_SUITE_SRC = $(filter-out $(TEST_DIR)/test_main.c,$(wildcard $(TEST_DIR)/tes
 TEST_STUB_SRC = $(wildcard $(TEST_DIR)/stubs/*.c)
 TEST_UNITY_SRC = $(TEST_DIR)/unity/unity.c
 TEST_APP_SRC = src/usb_comm.c src/runtime_config.c src/esc_firmware/update.c src/pwm/control.c src/pwm/pwm.c src/dshot/control.c src/dshot/telemetry_usb.c
+TEST_RELEASE_VERSION = 1.0.2-rc.3
 CMAKE_FLAGS = -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPICO_SDK_FETCH_FROM_GIT=ON -DPython3_EXECUTABLE=$(shell which python3)
 CMAKE_FLAGS_PICO2 = $(CMAKE_FLAGS) -DPICO_BOARD=pico2
 ARM_GCC_INCLUDE = $(shell arm-none-eabi-gcc -print-file-name=include)
@@ -59,7 +60,7 @@ lint-check: build-pico
 
 test:
 	mkdir -p $(TEST_BUILD_DIR)
-	cc -std=c11 -Wall -Wextra -I$(TEST_DIR)/mocks -I$(TEST_DIR) -Isrc \
+	cc -std=c11 -Wall -Wextra -DMANAFISH_RELEASE_VERSION='"$(TEST_RELEASE_VERSION)"' -I$(TEST_DIR)/mocks -I$(TEST_DIR) -Isrc \
 		$(TEST_SRC) $(TEST_STUB_SRC) $(TEST_UNITY_SRC) $(TEST_APP_SRC) \
 		-o $(TEST_BUILD_DIR)/run_tests
 	./$(TEST_BUILD_DIR)/run_tests

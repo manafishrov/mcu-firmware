@@ -4,6 +4,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+
+#define MCU_FIRMWARE_RELEASE_VERSION_LENGTH (sizeof(MCU_FIRMWARE_RELEASE_VERSION) - 1)
+
+_Static_assert(MCU_FIRMWARE_RELEASE_VERSION_LENGTH > 0,
+               "MCU firmware release version must not be empty");
+_Static_assert(MCU_FIRMWARE_RELEASE_VERSION_LENGTH <= USB_RELEASE_VERSION_MAX_LENGTH,
+               "MCU firmware release version is too long for USB reporting");
 
 static bool mcu_supports_dshot_1200(void) {
 #if defined(PICO_RP2350)
@@ -65,7 +73,28 @@ const char *mcu_runtime_config_protocol_name(thruster_protocol_t protocol) {
     return protocol == THRUSTER_PROTOCOL_PWM ? "PWM" : "DShot";
 }
 
+size_t mcu_runtime_config_build_release_packet(uint8_t *packet, size_t packet_capacity) {
+    const size_t packet_size =
+        MCU_FIRMWARE_RELEASE_VERSION_LENGTH + USB_RELEASE_VERSION_PACKET_OVERHEAD;
+    if (packet == NULL || packet_capacity < packet_size) {
+        return 0;
+    }
+
+    packet[0] = USB_RELEASE_VERSION_START_BYTE;
+    packet[1] = MCU_FIRMWARE_RELEASE_VERSION_LENGTH;
+    memcpy(&packet[2], MCU_FIRMWARE_RELEASE_VERSION, MCU_FIRMWARE_RELEASE_VERSION_LENGTH);
+    packet[packet_size - 1] = usb_calculate_checksum(packet, packet_size - 1);
+    return packet_size;
+}
+
 void mcu_runtime_config_send_version(const mcu_runtime_config_t *config) {
+    uint8_t release_packet[USB_RELEASE_VERSION_MAX_LENGTH + USB_RELEASE_VERSION_PACKET_OVERHEAD];
+    const size_t release_packet_size =
+        mcu_runtime_config_build_release_packet(release_packet, sizeof(release_packet));
+    if (release_packet_size > 0) {
+        fwrite(release_packet, 1, release_packet_size, stdout);
+    }
+
     uint8_t packet[USB_VERSION_PACKET_SIZE];
     packet[0] = USB_VERSION_START_BYTE;
     packet[1] = MCU_FIRMWARE_VERSION_MAJOR;

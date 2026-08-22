@@ -7,6 +7,13 @@ project(microcontroller_firmware)
 pico_sdk_init()
 
 set(FIRMWARE_EXE_NAME firmware)
+set(MANAFISH_RELEASE_VERSION "" CACHE STRING "Exact Manafish MCU release version")
+
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/release_version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/release_version.h
+    @ONLY
+)
 
 add_executable(${FIRMWARE_EXE_NAME}
     src/main.c
@@ -22,7 +29,12 @@ add_executable(${FIRMWARE_EXE_NAME}
     src/dshot/telemetry_usb.c
 )
 
-target_include_directories(${FIRMWARE_EXE_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(
+    ${FIRMWARE_EXE_NAME}
+    PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
 
 pico_generate_pio_header(${FIRMWARE_EXE_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/dshot/dshot.pio)
 
