@@ -7,6 +7,7 @@ project(microcontroller_firmware)
 pico_sdk_init()
 
 set(FIRMWARE_EXE_NAME firmware)
+set(MANAFISH_RELEASE_VERSION "" CACHE STRING "Exact Manafish MCU release version")
 
 add_executable(${FIRMWARE_EXE_NAME}
     src/main.c
@@ -23,6 +24,13 @@ add_executable(${FIRMWARE_EXE_NAME}
 )
 
 target_include_directories(${FIRMWARE_EXE_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+if(MANAFISH_RELEASE_VERSION)
+    target_compile_definitions(
+        ${FIRMWARE_EXE_NAME}
+        PRIVATE MANAFISH_RELEASE_VERSION="${MANAFISH_RELEASE_VERSION}"
+    )
+endif()
 
 pico_generate_pio_header(${FIRMWARE_EXE_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/dshot/dshot.pio)
 
