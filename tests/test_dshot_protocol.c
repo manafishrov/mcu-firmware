@@ -231,6 +231,16 @@ static void test_dshot_get_telemetry_quality_percent_rejects_invalid_channel(voi
     TEST_ASSERT_EQUAL_INT16(0, dshot_get_telemetry_quality_percent(&controller, 1));
 }
 
+static void test_last_erpm_age_is_unavailable_until_erpm_arrives(void) {
+    struct dshot_controller controller = {.num_channels = 1};
+
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, dshot_get_last_erpm_age_ms(&controller, 0, 1000));
+
+    controller.motor[0].telemetry_types = (1u << DSHOT_TELEMETRY_TYPE_ERPM);
+    controller.motor[0].last_erpm_ms = 750;
+    TEST_ASSERT_EQUAL_UINT32(250, dshot_get_last_erpm_age_ms(&controller, 0, 1000));
+}
+
 static void test_build_gcr_word_rejects_invalid_edge_counts(void) {
     uint32_t gcr20 = 0;
     uint8_t edge_diffs[22] = {0};
@@ -277,6 +287,7 @@ void test_dshot_protocol(void) {
     RUN_TEST(test_dshot_get_telemetry_quality_percent_reports_full_quality);
     RUN_TEST(test_dshot_get_telemetry_quality_percent_reports_half_invalid_packets);
     RUN_TEST(test_dshot_get_telemetry_quality_percent_rejects_invalid_channel);
+    RUN_TEST(test_last_erpm_age_is_unavailable_until_erpm_arrives);
     RUN_TEST(test_build_gcr_word_rejects_invalid_edge_counts);
     RUN_TEST(test_build_gcr_word_builds_expected_word_from_valid_edges);
 }

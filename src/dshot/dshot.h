@@ -111,6 +111,7 @@ struct dshot_motor {
     bool edt_enabled;             /* ESC acknowledged extended telemetry */
     uint8_t telemetry_types;      /* Bitmask of received EDT types (1 << type) */
     uint32_t telemetry_data[DSHOT_TELEMETRY_TYPE_COUNT]; /* Latest value per type */
+    uint32_t last_erpm_ms;                               /* Last valid eRPM frame */
     uint32_t max_temp;                                   /* Peak temperature observed */
     struct dshot_statistics stats;
     struct dshot_telemetry_quality quality;
@@ -161,5 +162,9 @@ bool dshot_is_telemetry_active(const struct dshot_controller *controller);
 /* Returns valid packet percentage in 0.01% units (10000 = perfect, 0 = no signal) */
 int16_t dshot_get_telemetry_quality_percent(const struct dshot_controller *controller,
                                             uint8_t channel);
+
+/* Returns UINT32_MAX until the motor has produced a valid eRPM frame */
+uint32_t dshot_get_last_erpm_age_ms(const struct dshot_controller *controller, uint8_t channel,
+                                    uint32_t now_ms);
 
 #endif
