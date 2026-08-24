@@ -149,8 +149,6 @@ static void init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
         edt_enable_time[i] = get_absolute_time();
         quality_warned[i] = false;
     }
-    next_quality_report_time = get_absolute_time();
-
     dshot_send_commands(command_values, &dshot_controller0, &dshot_controller1);
     dshot_run_frame_cycles(&dshot_controller0, &dshot_controller1, NUM_MOTORS * 4);
     dshot_send_command_to_all(&dshot_controller0, &dshot_controller1, DSHOT_CMD_3D_MODE_ON, 10);
@@ -163,6 +161,7 @@ static void init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
     dshot_initialized = true;
     dshot_telemetry_warning_time =
         delayed_by_ms(get_absolute_time(), DSHOT_TELEMETRY_WARNING_DELAY_MS);
+    next_quality_report_time = dshot_telemetry_warning_time;
     dshot_telemetry_warning_pending = true;
 }
 
