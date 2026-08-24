@@ -426,9 +426,13 @@ static bool dshot_handle_edt_handshake(struct dshot_motor *motor, uint16_t raw_v
 }
 
 static void dshot_update_telemetry_data(struct dshot_motor *motor, enum dshot_telemetry_type type,
-                                        uint32_t value) {
+                                        uint32_t value, uint32_t now_ms) {
     motor->telemetry_data[type] = value;
     motor->telemetry_types |= (1 << type);
+
+    if (type == DSHOT_TELEMETRY_TYPE_ERPM) {
+        motor->last_erpm_ms = now_ms;
+    }
 
     if (type == DSHOT_TELEMETRY_TYPE_TEMPERATURE && value > motor->max_temp) {
         motor->max_temp = value;
@@ -514,7 +518,7 @@ static void dshot_receive_oversampled(struct dshot_controller *controller, const
     }
 
     motor->stats.rx_frames++;
-    dshot_update_telemetry_data(motor, type, decoded);
+    dshot_update_telemetry_data(motor, type, decoded, now_ms);
     dshot_update_telemetry_quality(&motor->quality, true, now_ms);
 
     if (controller->telemetry_cb) {
@@ -691,4 +695,16 @@ int16_t dshot_get_telemetry_quality_percent(const struct dshot_controller *contr
     }
     uint32_t valid = motor->quality.packet_count_sum - motor->quality.invalid_count_sum;
     return (int16_t)(valid * 10000 / motor->quality.packet_count_sum);
+}
+
+uint32_t dshot_get_last_erpm_age_ms(const struct dshot_controller *controller, uint8_t channel,
+                                    uint32_t now_ms) {
+    if (channel >= controller->num_channels) {
+        return UINT32_MAX;
+    }
+    const struct dshot_motor *motor = &controller->motor[channel];
+    if (!(motor->telemetry_types & (1 << DSHOT_TELEMETRY_TYPE_ERPM))) {
+        return UINT32_MAX;
+    }
+    return now_ms - motor->last_erpm_ms;
 }
