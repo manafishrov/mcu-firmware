@@ -24,6 +24,7 @@
 #define INPUT_PACKET_SIZE USB_INPUT_PACKET_SIZE(NUM_MOTORS)
 #define QUALITY_WARN_THRESHOLD 5000
 #define QUALITY_REPORT_INTERVAL_MS 100
+#define DSHOT_TELEMETRY_WARNING_DELAY_MS 500
 #define ESC_PROTOCOL_DETECTION_RESET_MS 2100
 #define PWM_DETECTION_SETTLE_MS 1000
 #define ESC_VERSION_DISCOVERY_ATTEMPTS 3
@@ -48,6 +49,8 @@ static bool dshot_initialized = false;
 static bool runtime_config_received = false;
 static bool protocol_initialized = false;
 static bool all_motor_telemetry_seen = false;
+static bool dshot_telemetry_warning_pending = false;
+static absolute_time_t dshot_telemetry_warning_time;
 // A failed update can leave one or more ESCs partially programmed. Keep every
 // ESC in the bootloader until a complete retry succeeds; starting DShot here
 // could execute an incomplete application.
@@ -109,6 +112,7 @@ static void deinit_protocol(thruster_protocol_t protocol) {
         dshot_controller_deinit(&dshot_controller1);
         dshot_telemetry_usb_reset();
         dshot_initialized = false;
+        dshot_telemetry_warning_pending = false;
     } else if (protocol == THRUSTER_PROTOCOL_PWM && pwm_initialized) {
         pwm_controller_deinit(&pwm_controller);
         pwm_initialized = false;
@@ -129,7 +133,7 @@ static void init_pwm_protocol(void) {
     sleep_ms(PWM_DETECTION_SETTLE_MS);
 }
 
-static bool init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
+static void init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
     dshot_controller_reset_calibration();
     dshot_telemetry_usb_init();
     dshot_controller_init(&dshot_controller0, dshot_speed, DSHOT_PIO, DSHOT_SM_0, MOTOR0_PIN_BASE,
@@ -156,9 +160,10 @@ static bool init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
     }
     dshot_send_command_to_all(&dshot_controller0, &dshot_controller1,
                               DSHOT_EXTENDED_TELEMETRY_ENABLE, 10);
-    bool telemetry_ready = dshot_wait_for_telemetry(&dshot_controller0, &dshot_controller1);
     dshot_initialized = true;
-    return telemetry_ready;
+    dshot_telemetry_warning_time =
+        delayed_by_ms(get_absolute_time(), DSHOT_TELEMETRY_WARNING_DELAY_MS);
+    dshot_telemetry_warning_pending = true;
 }
 
 static bool dshot_telemetry_ready(void) {
@@ -268,7 +273,7 @@ static void apply_runtime_config(mcu_runtime_config_t config) {
     current_config = config;
 
     if (current_config.protocol == THRUSTER_PROTOCOL_DSHOT) {
-        all_motor_telemetry_seen = init_dshot_protocol(current_config.dshot_speed, entering_dshot);
+        init_dshot_protocol(current_config.dshot_speed, entering_dshot);
         protocol_initialized = true;
     } else {
         init_pwm_protocol();
@@ -279,10 +284,6 @@ static void apply_runtime_config(mcu_runtime_config_t config) {
     comm_timed_out = true;
     mcu_runtime_config_send_status(&current_config);
     request_esc_firmware_versions_if_idle();
-    if (current_config.protocol == THRUSTER_PROTOCOL_DSHOT && !all_motor_telemetry_seen) {
-        log_warn("DShot initialized, but telemetry is not active on every motor");
-        log_missing_dshot_telemetry();
-    }
 }
 
 static void handle_command_packet(uint8_t *command_buf) {
@@ -416,7 +417,7 @@ static void handle_esc_firmware_control_packet(const uint8_t *packet) {
 
     if (flashed) {
         esc_firmware_recovery_mode = false;
-        all_motor_telemetry_seen = init_dshot_protocol(current_config.dshot_speed, false);
+        init_dshot_protocol(current_config.dshot_speed, false);
         protocol_initialized = true;
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_COMPLETE, UINT8_MAX,
                                         ESC_FIRMWARE_UPDATE_ERROR_NONE,
@@ -425,10 +426,6 @@ static void handle_esc_firmware_control_packet(const uint8_t *packet) {
     } else {
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, failed_motor, error, 0);
         log_warn("ESC firmware update failed; keeping ESCs in bootloader for a safe retry");
-    }
-    if (flashed && !all_motor_telemetry_seen) {
-        log_warn("DShot telemetry did not recover on every motor after ESC firmware update");
-        log_missing_dshot_telemetry();
     }
     esc_firmware_update_reset();
 }
@@ -506,8 +503,15 @@ int main(void) {
             dshot_telemetry_usb_flush();
             if (!all_motor_telemetry_seen && dshot_telemetry_ready()) {
                 all_motor_telemetry_seen = true;
+                dshot_telemetry_warning_pending = false;
                 request_esc_firmware_versions_if_idle();
                 log_info("DShot telemetry active on all motors");
+            } else if (!all_motor_telemetry_seen && dshot_telemetry_warning_pending &&
+                       absolute_time_diff_us(get_absolute_time(), dshot_telemetry_warning_time) <=
+                           0) {
+                dshot_telemetry_warning_pending = false;
+                log_warn("DShot initialized, but telemetry is not active on every motor");
+                log_missing_dshot_telemetry();
             }
         } else {
             for (int i = 0; i < NUM_MOTORS; ++i) {
