@@ -364,6 +364,7 @@ static void handle_esc_firmware_control_packet(const uint8_t *packet) {
     if (command == ESC_FIRMWARE_UPDATE_COMMAND_ABORT) {
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_ABORTED, UINT8_MAX,
                                         ESC_FIRMWARE_UPDATE_ERROR_NONE, 0);
+        request_esc_firmware_versions_if_idle();
         return;
     }
 
@@ -460,6 +461,9 @@ static void handle_esc_firmware_data_packet(const uint8_t *packet) {
 
 static void service_dshot_protocol(void) {
     bool esc_firmware_upload_active = esc_firmware_update_receiving();
+    if (esc_firmware_upload_active) {
+        set_all_commands_neutral();
+    }
     dshot_send_commands(command_values, &dshot_controller0, &dshot_controller1);
     dshot_enable_edt_if_idle(command_values, edt_enable_scheduled, edt_enable_time,
                              &dshot_controller0, &dshot_controller1);
