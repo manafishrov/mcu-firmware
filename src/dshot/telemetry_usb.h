@@ -13,6 +13,7 @@
 #define TELEMETRY_TYPE_TEMPERATURE 2
 #define TELEMETRY_TYPE_CURRENT 3
 #define TELEMETRY_TYPE_SIGNAL_QUALITY 4
+#define TELEMETRY_SIGNAL_QUALITY_UNAVAILABLE -1
 #define TELEMETRY_TYPE_ESC_VERSION_LENGTH 5
 #define TELEMETRY_TYPE_ESC_VERSION_CHUNK 6
 #define TELEMETRY_TYPE_ESC_VERSION_COMPLETE 7
@@ -33,6 +34,7 @@ void dshot_telemetry_usb_init(void);
 void dshot_telemetry_usb_reset(void);
 void dshot_telemetry_usb_begin_esc_version_discovery(void);
 bool dshot_telemetry_usb_all_esc_versions_reported(void);
+uint8_t dshot_telemetry_usb_esc_versions_reported_count(void);
 void dshot_telemetry_usb_send(uint8_t motor_id, uint8_t type, int32_t value);
 void dshot_telemetry_usb_flush(void);
 bool dshot_telemetry_usb_decode_esc_version(esc_version_decoder_t *decoder,

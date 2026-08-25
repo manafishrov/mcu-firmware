@@ -68,11 +68,13 @@ static void send_quality_reports(void) {
         int channel;
         dshot_get_motor_controller(i, &ctrl, &channel, &dshot_controller0, &dshot_controller1);
         int16_t quality = dshot_get_telemetry_quality_percent(ctrl, channel);
-        dshot_telemetry_usb_send(i, TELEMETRY_TYPE_SIGNAL_QUALITY, (int32_t)quality);
+        uint32_t erpm_age_ms = dshot_get_last_erpm_age_ms(ctrl, channel, now_ms);
+        int32_t reported_quality =
+            erpm_age_ms == UINT32_MAX ? TELEMETRY_SIGNAL_QUALITY_UNAVAILABLE : (int32_t)quality;
+        dshot_telemetry_usb_send(i, TELEMETRY_TYPE_SIGNAL_QUALITY, reported_quality);
 
         if (quality < QUALITY_WARN_THRESHOLD && !quality_warned[i]) {
             quality_warned[i] = true;
-            uint32_t erpm_age_ms = dshot_get_last_erpm_age_ms(ctrl, channel, now_ms);
             if (erpm_age_ms == UINT32_MAX) {
                 log_warnf("Motor %d: DShot telemetry %d.%02d%%, types=0x%02x, last eRPM=never, "
                           "cause=%s",
@@ -172,7 +174,7 @@ static bool dshot_telemetry_ready(void) {
 
 static void request_esc_firmware_versions_if_idle(void) {
     if (current_config.protocol != THRUSTER_PROTOCOL_DSHOT || !dshot_initialized ||
-        !protocol_initialized || !all_commands_neutral()) {
+        !protocol_initialized || !all_commands_neutral() || esc_firmware_update_receiving()) {
         return;
     }
 
@@ -192,7 +194,11 @@ static void service_esc_version_discovery(void) {
     }
     if (esc_version_discovery_attempts >= ESC_VERSION_DISCOVERY_ATTEMPTS) {
         esc_version_discovery_active = false;
-        log_warn("ESC firmware version discovery ended before every ESC reported");
+        uint8_t reported = dshot_telemetry_usb_esc_versions_reported_count();
+        if (reported > 0) {
+            log_warnf("ESC firmware version discovery received %u of %u responses", reported,
+                      NUM_MOTORS);
+        }
         return;
     }
     if (!all_commands_neutral()) {
@@ -375,6 +381,12 @@ static void handle_esc_firmware_control_packet(const uint8_t *packet) {
                                             ESC_FIRMWARE_UPDATE_ERROR_THRUSTERS_ACTIVE, 0);
             return;
         }
+        // Keep updater acknowledgements isolated on USB while the image is
+        // staged. DShot continues sending neutral frames, but ordinary
+        // telemetry and version discovery remain quiet until the transaction
+        // completes or is aborted.
+        esc_version_discovery_active = false;
+        dshot_telemetry_usb_reset();
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_READY, UINT8_MAX,
                                         ESC_FIRMWARE_UPDATE_ERROR_NONE,
                                         esc_firmware_update_image_size());
@@ -400,6 +412,10 @@ static void handle_esc_firmware_control_packet(const uint8_t *packet) {
         esc_firmware_update_reset();
         return;
     }
+
+    // Discard telemetry accumulated while USB output was suspended so it
+    // cannot delay bootloader progress statuses after COMMIT.
+    dshot_telemetry_usb_reset();
 
     if (!esc_firmware_recovery_mode) {
         hold_neutral_before_switch();
@@ -440,6 +456,42 @@ static void handle_esc_firmware_data_packet(const uint8_t *packet) {
     esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_RECEIVED, UINT8_MAX,
                                     ESC_FIRMWARE_UPDATE_ERROR_NONE,
                                     esc_firmware_update_received_size());
+}
+
+static void service_dshot_protocol(void) {
+    bool esc_firmware_upload_active = esc_firmware_update_receiving();
+    dshot_send_commands(command_values, &dshot_controller0, &dshot_controller1);
+    dshot_enable_edt_if_idle(command_values, edt_enable_scheduled, edt_enable_time,
+                             &dshot_controller0, &dshot_controller1);
+    dshot_loop(&dshot_controller0);
+    dshot_loop(&dshot_controller1);
+    if (esc_firmware_upload_active) {
+        return;
+    }
+
+    service_esc_version_discovery();
+    if (dshot_quality_report_due(&next_quality_report_time, QUALITY_REPORT_INTERVAL_MS,
+                                 get_absolute_time())) {
+        send_quality_reports();
+    }
+    dshot_telemetry_usb_flush();
+    if (!all_motor_telemetry_seen && dshot_telemetry_ready()) {
+        all_motor_telemetry_seen = true;
+        dshot_telemetry_warning_pending = false;
+        request_esc_firmware_versions_if_idle();
+        log_info("DShot telemetry active on all motors");
+    } else if (!all_motor_telemetry_seen && dshot_telemetry_warning_pending &&
+               absolute_time_diff_us(get_absolute_time(), dshot_telemetry_warning_time) <= 0) {
+        dshot_telemetry_warning_pending = false;
+        log_warn("DShot initialized, but telemetry is not active on every motor");
+        log_missing_dshot_telemetry();
+    }
+}
+
+static void service_pwm_protocol(void) {
+    for (int i = 0; i < NUM_MOTORS; ++i) {
+        pwm_set_throttle(&pwm_controller, i, pwm_translate_throttle(command_values[i]));
+    }
 }
 
 int main(void) {
@@ -489,33 +541,9 @@ int main(void) {
         }
 
         if (current_config.protocol == THRUSTER_PROTOCOL_DSHOT) {
-            dshot_send_commands(command_values, &dshot_controller0, &dshot_controller1);
-            dshot_enable_edt_if_idle(command_values, edt_enable_scheduled, edt_enable_time,
-                                     &dshot_controller0, &dshot_controller1);
-            service_esc_version_discovery();
-            if (dshot_quality_report_due(&next_quality_report_time, QUALITY_REPORT_INTERVAL_MS,
-                                         get_absolute_time())) {
-                send_quality_reports();
-            }
-            dshot_loop(&dshot_controller0);
-            dshot_loop(&dshot_controller1);
-            dshot_telemetry_usb_flush();
-            if (!all_motor_telemetry_seen && dshot_telemetry_ready()) {
-                all_motor_telemetry_seen = true;
-                dshot_telemetry_warning_pending = false;
-                request_esc_firmware_versions_if_idle();
-                log_info("DShot telemetry active on all motors");
-            } else if (!all_motor_telemetry_seen && dshot_telemetry_warning_pending &&
-                       absolute_time_diff_us(get_absolute_time(), dshot_telemetry_warning_time) <=
-                           0) {
-                dshot_telemetry_warning_pending = false;
-                log_warn("DShot initialized, but telemetry is not active on every motor");
-                log_missing_dshot_telemetry();
-            }
+            service_dshot_protocol();
         } else {
-            for (int i = 0; i < NUM_MOTORS; ++i) {
-                pwm_set_throttle(&pwm_controller, i, pwm_translate_throttle(command_values[i]));
-            }
+            service_pwm_protocol();
         }
     }
 }

@@ -55,6 +55,7 @@ bool esc_firmware_update_parse_control(const uint8_t *packet,
                                        esc_firmware_update_command_t *command,
                                        esc_firmware_update_error_t *error);
 bool esc_firmware_update_receive_data(const uint8_t *packet, esc_firmware_update_error_t *error);
+bool esc_firmware_update_receiving(void);
 bool esc_firmware_update_validate_image(esc_firmware_update_error_t *error);
 const uint8_t *esc_firmware_update_image(void);
 uint16_t esc_firmware_update_image_size(void);

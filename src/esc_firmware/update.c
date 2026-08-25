@@ -15,6 +15,9 @@ static uint16_t expected_size;
 static uint16_t received_size;
 static uint32_t expected_crc32;
 static bool receiving;
+static uint16_t last_chunk_offset;
+static uint8_t last_chunk_length;
+static bool last_chunk_valid;
 
 static uint16_t read_le16(const uint8_t *data) {
     return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
@@ -37,6 +40,9 @@ void esc_firmware_update_reset(void) {
     received_size = 0;
     expected_crc32 = 0;
     receiving = false;
+    last_chunk_offset = 0;
+    last_chunk_length = 0;
+    last_chunk_valid = false;
 }
 
 bool esc_firmware_update_parse_control(const uint8_t *packet,
@@ -79,6 +85,7 @@ bool esc_firmware_update_parse_control(const uint8_t *packet,
     received_size = 0;
     expected_crc32 = read_le32(&packet[4]);
     receiving = true;
+    last_chunk_valid = false;
     *error = ESC_FIRMWARE_UPDATE_ERROR_NONE;
     return true;
 }
@@ -97,16 +104,36 @@ bool esc_firmware_update_receive_data(const uint8_t *packet, esc_firmware_update
 
     uint16_t offset = read_le16(&packet[1]);
     uint8_t length = packet[3];
-    if (length == 0 || length > ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE || offset != received_size ||
+    if (length == 0 || length > ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE ||
         (uint32_t)offset + length > expected_size) {
+        *error = ESC_FIRMWARE_UPDATE_ERROR_BAD_SEQUENCE;
+        return false;
+    }
+
+    // The host retries a chunk if its acknowledgement is lost. Accept an
+    // identical repeat of the most recently stored chunk without advancing
+    // the image offset so that one missed USB status packet is recoverable.
+    if (last_chunk_valid && offset == last_chunk_offset && length == last_chunk_length &&
+        memcmp(&image_buffer[offset], &packet[4], length) == 0) {
+        *error = ESC_FIRMWARE_UPDATE_ERROR_NONE;
+        return true;
+    }
+    if (offset != received_size) {
         *error = ESC_FIRMWARE_UPDATE_ERROR_BAD_SEQUENCE;
         return false;
     }
 
     memcpy(&image_buffer[offset], &packet[4], length);
     received_size += length;
+    last_chunk_offset = offset;
+    last_chunk_length = length;
+    last_chunk_valid = true;
     *error = ESC_FIRMWARE_UPDATE_ERROR_NONE;
     return true;
+}
+
+bool esc_firmware_update_receiving(void) {
+    return receiving;
 }
 
 uint32_t esc_firmware_update_crc32(const uint8_t *data, size_t length) {
