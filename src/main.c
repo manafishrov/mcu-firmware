@@ -519,6 +519,7 @@ static void handle_esc_firmware_data_packet(const uint8_t *packet) {
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX, error,
                                         esc_firmware_update_received_size());
         esc_firmware_update_reset();
+        request_esc_firmware_versions_if_idle();
         return;
     }
     esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_RECEIVED, UINT8_MAX,
