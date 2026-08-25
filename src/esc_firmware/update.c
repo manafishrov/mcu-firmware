@@ -15,6 +15,7 @@ static uint16_t expected_size;
 static uint16_t received_size;
 static uint32_t expected_crc32;
 static bool receiving;
+static bool recovery_requested;
 static uint16_t last_chunk_offset;
 static uint8_t last_chunk_length;
 static bool last_chunk_valid;
@@ -40,6 +41,7 @@ void esc_firmware_update_reset(void) {
     received_size = 0;
     expected_crc32 = 0;
     receiving = false;
+    recovery_requested = false;
     last_chunk_offset = 0;
     last_chunk_length = 0;
     last_chunk_valid = false;
@@ -69,7 +71,8 @@ bool esc_firmware_update_parse_control(const uint8_t *packet,
         *error = ESC_FIRMWARE_UPDATE_ERROR_NONE;
         return true;
     }
-    if (*command != ESC_FIRMWARE_UPDATE_COMMAND_BEGIN) {
+    if (*command != ESC_FIRMWARE_UPDATE_COMMAND_BEGIN &&
+        *command != ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN) {
         *error = ESC_FIRMWARE_UPDATE_ERROR_BAD_PACKET;
         return false;
     }
@@ -85,6 +88,7 @@ bool esc_firmware_update_parse_control(const uint8_t *packet,
     received_size = 0;
     expected_crc32 = read_le32(&packet[4]);
     receiving = true;
+    recovery_requested = *command == ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN;
     last_chunk_valid = false;
     *error = ESC_FIRMWARE_UPDATE_ERROR_NONE;
     return true;
@@ -134,6 +138,10 @@ bool esc_firmware_update_receive_data(const uint8_t *packet, esc_firmware_update
 
 bool esc_firmware_update_receiving(void) {
     return receiving;
+}
+
+bool esc_firmware_update_recovery_requested(void) {
+    return recovery_requested;
 }
 
 uint32_t esc_firmware_update_crc32(const uint8_t *data, size_t length) {

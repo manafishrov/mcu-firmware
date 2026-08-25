@@ -16,36 +16,59 @@ uint8_t usb_calculate_checksum(const uint8_t *data, size_t len) {
     return checksum;
 }
 
-usb_packet_kind_t usb_poll(usb_packet_reader_t *readers, size_t reader_count) {
-    int c = getchar_timeout_us(0);
-    while (c != PICO_ERROR_TIMEOUT) {
-        uint8_t byte = (uint8_t)c;
-        usb_packet_reader_t *active_reader = NULL;
+void usb_expire_incomplete_packets(usb_packet_reader_t *readers, size_t reader_count,
+                                   absolute_time_t now) {
+    for (size_t i = 0; i < reader_count; ++i) {
+        if (readers[i].index > 0 &&
+            absolute_time_diff_us(readers[i].last_byte_time, now) >= USB_PACKET_TIMEOUT_MS * 1000) {
+            readers[i].index = 0;
+        }
+    }
+}
 
+usb_packet_kind_t usb_process_byte(usb_packet_reader_t *readers, size_t reader_count, uint8_t byte,
+                                   absolute_time_t now) {
+    usb_expire_incomplete_packets(readers, reader_count, now);
+    usb_packet_reader_t *active_reader = NULL;
+
+    for (size_t i = 0; i < reader_count; ++i) {
+        if (readers[i].index > 0) {
+            active_reader = &readers[i];
+            break;
+        }
+    }
+
+    if (active_reader != NULL) {
+        active_reader->buffer[active_reader->index++] = byte;
+        active_reader->last_byte_time = now;
+        if (active_reader->index >= active_reader->packet_size) {
+            usb_packet_kind_t kind = active_reader->kind;
+            active_reader->index = 0;
+            return kind;
+        }
+    } else {
         for (size_t i = 0; i < reader_count; ++i) {
-            if (readers[i].index > 0) {
-                active_reader = &readers[i];
+            if (byte == readers[i].start_byte) {
+                readers[i].buffer[0] = byte;
+                readers[i].index = 1;
+                readers[i].last_byte_time = now;
                 break;
             }
         }
+    }
+    return USB_PACKET_NONE;
+}
 
-        if (active_reader != NULL) {
-            active_reader->buffer[active_reader->index++] = byte;
-            if (active_reader->index >= active_reader->packet_size) {
-                usb_packet_kind_t kind = active_reader->kind;
-                active_reader->index = 0;
-                return kind;
-            }
-        } else {
-            for (size_t i = 0; i < reader_count; ++i) {
-                if (byte == readers[i].start_byte) {
-                    readers[i].buffer[0] = byte;
-                    readers[i].index = 1;
-                    break;
-                }
-            }
+usb_packet_kind_t usb_poll(usb_packet_reader_t *readers, size_t reader_count) {
+    absolute_time_t now = get_absolute_time();
+    usb_expire_incomplete_packets(readers, reader_count, now);
+    int c = getchar_timeout_us(0);
+    while (c != PICO_ERROR_TIMEOUT) {
+        usb_packet_kind_t kind =
+            usb_process_byte(readers, reader_count, (uint8_t)c, get_absolute_time());
+        if (kind != USB_PACKET_NONE) {
+            return kind;
         }
-
         c = getchar_timeout_us(0);
     }
     return USB_PACKET_NONE;
@@ -71,12 +94,11 @@ bool usb_parse_packet(const uint8_t *usb_buf, size_t packet_size, uint16_t *raw_
 }
 
 void usb_check_timeout(absolute_time_t last_comm_time, uint16_t *thruster_values, int num_motors,
-                       uint16_t neutral_value, size_t *usb_idx, bool *comm_timed_out) {
+                       uint16_t neutral_value, bool *comm_timed_out) {
     if (absolute_time_diff_us(last_comm_time, get_absolute_time()) > USB_COMM_TIMEOUT_MS * 1000) {
         for (int i = 0; i < num_motors; ++i) {
             thruster_values[i] = neutral_value;
         }
-        *usb_idx = 0;
         if (!*comm_timed_out) {
             *comm_timed_out = true;
             log_warn("USB comm lost, motors neutral");

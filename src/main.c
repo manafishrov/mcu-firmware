@@ -167,6 +167,15 @@ static void init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
     dshot_telemetry_warning_pending = true;
 }
 
+static void init_current_protocol(bool persist_3d_mode) {
+    if (current_config.protocol == THRUSTER_PROTOCOL_DSHOT) {
+        init_dshot_protocol(current_config.dshot_speed, persist_3d_mode);
+    } else {
+        init_pwm_protocol();
+    }
+    protocol_initialized = true;
+}
+
 static bool dshot_telemetry_ready(void) {
     return dshot_is_telemetry_active(&dshot_controller0) &&
            dshot_is_telemetry_active(&dshot_controller1);
@@ -277,13 +286,7 @@ static void apply_runtime_config(mcu_runtime_config_t config) {
     esc_firmware_update_reset();
     current_config = config;
 
-    if (current_config.protocol == THRUSTER_PROTOCOL_DSHOT) {
-        init_dshot_protocol(current_config.dshot_speed, entering_dshot);
-        protocol_initialized = true;
-    } else {
-        init_pwm_protocol();
-        protocol_initialized = true;
-    }
+    init_current_protocol(entering_dshot);
 
     runtime_config_received = true;
     comm_timed_out = true;
@@ -329,6 +332,8 @@ static void handle_config_packet(uint8_t *config_buf) {
 
     if (esc_firmware_recovery_mode) {
         log_warn("Ignoring runtime config while ESC firmware recovery is required");
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_RECOVERY_REQUIRED, UINT8_MAX,
+                                        ESC_FIRMWARE_UPDATE_ERROR_NONE, 1);
         return;
     }
 
@@ -353,6 +358,138 @@ static void handle_config_packet(uint8_t *config_buf) {
               current_config.dshot_speed);
 }
 
+static bool runtime_dshot_ready(void) {
+    return runtime_config_received && current_config.protocol == THRUSTER_PROTOCOL_DSHOT &&
+           dshot_initialized && protocol_initialized;
+}
+
+static void fail_esc_firmware_update(esc_firmware_update_error_t error, uint32_t value) {
+    esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX, error, value);
+    esc_firmware_update_reset();
+}
+
+static void handle_esc_firmware_begin(bool recovery_request) {
+    if (esc_firmware_recovery_mode && !recovery_request) {
+        esc_firmware_update_reset();
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_RECOVERY_REQUIRED, UINT8_MAX,
+                                        ESC_FIRMWARE_UPDATE_ERROR_NONE, 1);
+        return;
+    }
+
+    if (!runtime_dshot_ready()) {
+        if (recovery_request) {
+            esc_version_discovery_active = false;
+            esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_READY, UINT8_MAX,
+                                            ESC_FIRMWARE_UPDATE_ERROR_NONE,
+                                            esc_firmware_update_image_size());
+            return;
+        }
+        fail_esc_firmware_update(ESC_FIRMWARE_UPDATE_ERROR_NOT_DSHOT, 0);
+        return;
+    }
+
+    if (!all_commands_neutral()) {
+        fail_esc_firmware_update(ESC_FIRMWARE_UPDATE_ERROR_THRUSTERS_ACTIVE, 0);
+        return;
+    }
+
+    // Keep updater acknowledgements isolated on USB while the image is
+    // staged. DShot continues sending neutral frames, but ordinary
+    // telemetry and version discovery remain quiet until the transaction
+    // completes or is aborted.
+    esc_version_discovery_active = false;
+    dshot_telemetry_usb_reset();
+    esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_READY, UINT8_MAX,
+                                    ESC_FIRMWARE_UPDATE_ERROR_NONE,
+                                    esc_firmware_update_image_size());
+}
+
+static bool esc_firmware_commit_is_safe(bool recovery_transaction,
+                                        esc_firmware_update_error_t *error) {
+    if (!recovery_transaction && !runtime_dshot_ready()) {
+        fail_esc_firmware_update(ESC_FIRMWARE_UPDATE_ERROR_NOT_DSHOT, 0);
+        return false;
+    }
+    if (!esc_firmware_update_validate_image(error)) {
+        fail_esc_firmware_update(*error, esc_firmware_update_received_size());
+        return false;
+    }
+    if (runtime_config_received && !all_commands_neutral()) {
+        fail_esc_firmware_update(ESC_FIRMWARE_UPDATE_ERROR_THRUSTERS_ACTIVE, 0);
+        return false;
+    }
+    return true;
+}
+
+static void prepare_for_esc_firmware_flash(bool was_recovery) {
+    // Discard telemetry accumulated while USB output was suspended so it
+    // cannot delay bootloader progress statuses after COMMIT.
+    if (dshot_initialized) {
+        dshot_telemetry_usb_reset();
+    }
+    if (!was_recovery && protocol_initialized) {
+        hold_neutral_before_switch();
+    }
+    protocol_initialized = false;
+    all_motor_telemetry_seen = false;
+    if (runtime_config_received) {
+        deinit_protocol(current_config.protocol);
+    }
+    esc_version_discovery_active = false;
+    esc_firmware_recovery_mode = true;
+}
+
+static void finish_successful_esc_firmware_flash(void) {
+    esc_firmware_recovery_mode = false;
+    if (runtime_config_received) {
+        init_current_protocol(false);
+    }
+    esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_COMPLETE, UINT8_MAX,
+                                    ESC_FIRMWARE_UPDATE_ERROR_NONE,
+                                    esc_firmware_update_image_size());
+    if (dshot_initialized) {
+        request_esc_firmware_versions_if_idle();
+    }
+}
+
+static void finish_failed_esc_firmware_flash(bool was_recovery, bool modified, uint8_t failed_motor,
+                                             esc_firmware_update_error_t error) {
+    bool recovery_required = was_recovery || modified;
+    esc_firmware_recovery_mode = recovery_required;
+    if (!recovery_required && runtime_config_received) {
+        init_current_protocol(false);
+    }
+    esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, failed_motor, error,
+                                    recovery_required ? 1u : 0u);
+    if (recovery_required) {
+        log_warn("ESC firmware update failed; keeping ESCs in bootloader for a safe retry");
+    } else {
+        log_warn("ESC firmware update stopped before any ESC was modified");
+    }
+}
+
+static void commit_esc_firmware_update(esc_firmware_update_error_t *error) {
+    bool recovery_transaction = esc_firmware_update_recovery_requested();
+    if (!esc_firmware_commit_is_safe(recovery_transaction, error)) {
+        return;
+    }
+
+    bool was_recovery = esc_firmware_recovery_mode || recovery_transaction;
+    prepare_for_esc_firmware_flash(was_recovery);
+
+    uint8_t failed_motor = UINT8_MAX;
+    bool modified = false;
+    bool flashed =
+        am32_bootloader_flash_all(esc_firmware_update_image(), esc_firmware_update_image_size(),
+                                  error, &failed_motor, &modified);
+    if (flashed) {
+        finish_successful_esc_firmware_flash();
+    } else {
+        finish_failed_esc_firmware_flash(was_recovery, modified, failed_motor, *error);
+    }
+    esc_firmware_update_reset();
+}
+
 static void handle_esc_firmware_control_packet(const uint8_t *packet) {
     esc_firmware_update_command_t command;
     esc_firmware_update_error_t error;
@@ -368,82 +505,12 @@ static void handle_esc_firmware_control_packet(const uint8_t *packet) {
         return;
     }
 
-    if (command == ESC_FIRMWARE_UPDATE_COMMAND_BEGIN) {
-        if (!runtime_config_received || current_config.protocol != THRUSTER_PROTOCOL_DSHOT ||
-            (!esc_firmware_recovery_mode && (!dshot_initialized || !protocol_initialized))) {
-            esc_firmware_update_reset();
-            esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX,
-                                            ESC_FIRMWARE_UPDATE_ERROR_NOT_DSHOT, 0);
-            return;
-        }
-        if (!all_commands_neutral()) {
-            esc_firmware_update_reset();
-            esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX,
-                                            ESC_FIRMWARE_UPDATE_ERROR_THRUSTERS_ACTIVE, 0);
-            return;
-        }
-        // Keep updater acknowledgements isolated on USB while the image is
-        // staged. DShot continues sending neutral frames, but ordinary
-        // telemetry and version discovery remain quiet until the transaction
-        // completes or is aborted.
-        esc_version_discovery_active = false;
-        dshot_telemetry_usb_reset();
-        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_READY, UINT8_MAX,
-                                        ESC_FIRMWARE_UPDATE_ERROR_NONE,
-                                        esc_firmware_update_image_size());
+    bool recovery_request = command == ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN;
+    if (command == ESC_FIRMWARE_UPDATE_COMMAND_BEGIN || recovery_request) {
+        handle_esc_firmware_begin(recovery_request);
         return;
     }
-
-    if (!runtime_config_received || current_config.protocol != THRUSTER_PROTOCOL_DSHOT ||
-        (!esc_firmware_recovery_mode && (!dshot_initialized || !protocol_initialized))) {
-        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX,
-                                        ESC_FIRMWARE_UPDATE_ERROR_NOT_DSHOT, 0);
-        esc_firmware_update_reset();
-        return;
-    }
-    if (!esc_firmware_update_validate_image(&error)) {
-        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX, error,
-                                        esc_firmware_update_received_size());
-        esc_firmware_update_reset();
-        return;
-    }
-    if (!all_commands_neutral()) {
-        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX,
-                                        ESC_FIRMWARE_UPDATE_ERROR_THRUSTERS_ACTIVE, 0);
-        esc_firmware_update_reset();
-        return;
-    }
-
-    // Discard telemetry accumulated while USB output was suspended so it
-    // cannot delay bootloader progress statuses after COMMIT.
-    dshot_telemetry_usb_reset();
-
-    if (!esc_firmware_recovery_mode) {
-        hold_neutral_before_switch();
-    }
-    protocol_initialized = false;
-    all_motor_telemetry_seen = false;
-    deinit_protocol(THRUSTER_PROTOCOL_DSHOT);
-    esc_version_discovery_active = false;
-    esc_firmware_recovery_mode = true;
-
-    uint8_t failed_motor = UINT8_MAX;
-    bool flashed = am32_bootloader_flash_all(
-        esc_firmware_update_image(), esc_firmware_update_image_size(), &error, &failed_motor);
-
-    if (flashed) {
-        esc_firmware_recovery_mode = false;
-        init_dshot_protocol(current_config.dshot_speed, false);
-        protocol_initialized = true;
-        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_COMPLETE, UINT8_MAX,
-                                        ESC_FIRMWARE_UPDATE_ERROR_NONE,
-                                        esc_firmware_update_image_size());
-        request_esc_firmware_versions_if_idle();
-    } else {
-        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, failed_motor, error, 0);
-        log_warn("ESC firmware update failed; keeping ESCs in bootloader for a safe retry");
-    }
-    esc_firmware_update_reset();
+    commit_esc_firmware_update(&error);
 }
 
 static void handle_esc_firmware_data_packet(const uint8_t *packet) {
@@ -511,12 +578,12 @@ int main(void) {
     static uint8_t esc_firmware_control_buf[ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE];
     static uint8_t esc_firmware_data_buf[ESC_FIRMWARE_USB_DATA_PACKET_SIZE];
     usb_packet_reader_t readers[] = {
-        {USB_INPUT_START_BYTE, command_buf, INPUT_PACKET_SIZE, 0, USB_PACKET_COMMAND},
-        {USB_CONFIG_START_BYTE, config_buf, USB_CONFIG_PACKET_SIZE, 0, USB_PACKET_CONFIG},
+        {USB_INPUT_START_BYTE, command_buf, INPUT_PACKET_SIZE, 0, USB_PACKET_COMMAND, 0},
+        {USB_CONFIG_START_BYTE, config_buf, USB_CONFIG_PACKET_SIZE, 0, USB_PACKET_CONFIG, 0},
         {ESC_FIRMWARE_USB_CONTROL_START_BYTE, esc_firmware_control_buf,
-         ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE, 0, USB_PACKET_ESC_FIRMWARE_CONTROL},
+         ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE, 0, USB_PACKET_ESC_FIRMWARE_CONTROL, 0},
         {ESC_FIRMWARE_USB_DATA_START_BYTE, esc_firmware_data_buf, ESC_FIRMWARE_USB_DATA_PACKET_SIZE,
-         0, USB_PACKET_ESC_FIRMWARE_DATA},
+         0, USB_PACKET_ESC_FIRMWARE_DATA, 0},
     };
     esc_firmware_update_reset();
 
@@ -534,7 +601,7 @@ int main(void) {
         }
 
         usb_check_timeout(last_comm_time, command_values, NUM_MOTORS, CMD_THROTTLE_NEUTRAL,
-                          &readers[0].index, &comm_timed_out);
+                          &comm_timed_out);
 
         if (!runtime_config_received) {
             continue;

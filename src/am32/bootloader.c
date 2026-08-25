@@ -247,7 +247,9 @@ static bool program_chunk(uint8_t motor, const uint8_t *data, uint16_t offset, u
 }
 
 bool am32_bootloader_flash_all(const uint8_t *image, uint16_t image_size,
-                               esc_firmware_update_error_t *error, uint8_t *failed_motor) {
+                               esc_firmware_update_error_t *error, uint8_t *failed_motor,
+                               bool *modified) {
+    *modified = false;
     for (uint8_t motor = 0; motor < NUM_MOTORS; ++motor) {
         gpio_init(motor_pins[motor]);
         gpio_put(motor_pins[motor], true);
@@ -261,18 +263,28 @@ bool am32_bootloader_flash_all(const uint8_t *image, uint16_t image_size,
     // eight bootloaders can be entered together before programming begins.
     sleep_ms(AM32_BOOTLOADER_ENTRY_MS);
 
+    // Prove that every connected ESC is the supported target before writing
+    // the first byte. A missing or wrong target therefore remains a fully
+    // recoverable pre-write failure for the entire bank.
+    for (uint8_t motor = 0; motor < NUM_MOTORS; ++motor) {
+        *failed_motor = motor;
+        if (!wait_for_motor(motor, error)) {
+            run_all();
+            return false;
+        }
+    }
+
     for (uint8_t motor = 0; motor < NUM_MOTORS; ++motor) {
         *failed_motor = motor;
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_MOTOR_BEGIN, motor,
                                         ESC_FIRMWARE_UPDATE_ERROR_NONE, 0);
-        if (!wait_for_motor(motor, error)) {
-            return false;
-        }
-
         for (uint16_t offset = 0; offset < image_size; offset += AM32_PROGRAM_CHUNK_SIZE) {
             uint16_t remaining = image_size - offset;
             uint16_t length =
                 remaining < AM32_PROGRAM_CHUNK_SIZE ? remaining : AM32_PROGRAM_CHUNK_SIZE;
+            // A failed program command may still have changed flash. Mark the
+            // bank unsafe before issuing the first write, not after its ACK.
+            *modified = true;
             if (!program_chunk(motor, &image[offset], offset, length, error)) {
                 return false;
             }
