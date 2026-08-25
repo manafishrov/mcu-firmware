@@ -23,6 +23,7 @@ typedef enum {
     ESC_FIRMWARE_UPDATE_COMMAND_BEGIN = 1,
     ESC_FIRMWARE_UPDATE_COMMAND_COMMIT = 2,
     ESC_FIRMWARE_UPDATE_COMMAND_ABORT = 3,
+    ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN = 4,
 } esc_firmware_update_command_t;
 
 typedef enum {
@@ -34,6 +35,7 @@ typedef enum {
     ESC_FIRMWARE_UPDATE_STATUS_COMPLETE = 6,
     ESC_FIRMWARE_UPDATE_STATUS_FAILED = 7,
     ESC_FIRMWARE_UPDATE_STATUS_ABORTED = 8,
+    ESC_FIRMWARE_UPDATE_STATUS_RECOVERY_REQUIRED = 9,
 } esc_firmware_update_status_t;
 
 typedef enum {
@@ -55,6 +57,8 @@ bool esc_firmware_update_parse_control(const uint8_t *packet,
                                        esc_firmware_update_command_t *command,
                                        esc_firmware_update_error_t *error);
 bool esc_firmware_update_receive_data(const uint8_t *packet, esc_firmware_update_error_t *error);
+bool esc_firmware_update_receiving(void);
+bool esc_firmware_update_recovery_requested(void);
 bool esc_firmware_update_validate_image(esc_firmware_update_error_t *error);
 const uint8_t *esc_firmware_update_image(void);
 uint16_t esc_firmware_update_image_size(void);

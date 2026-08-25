@@ -9,7 +9,8 @@ static void make_control_packet(uint8_t *packet, esc_firmware_update_command_t c
     memset(packet, 0, ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE);
     packet[0] = ESC_FIRMWARE_USB_CONTROL_START_BYTE;
     packet[1] = (uint8_t)command;
-    if (command == ESC_FIRMWARE_UPDATE_COMMAND_BEGIN) {
+    if (command == ESC_FIRMWARE_UPDATE_COMMAND_BEGIN ||
+        command == ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN) {
         packet[2] = (uint8_t)ESC_FIRMWARE_IMAGE_SIZE;
         packet[3] = (uint8_t)(ESC_FIRMWARE_IMAGE_SIZE >> 8);
         uint32_t crc = esc_firmware_update_crc32(image, ESC_FIRMWARE_IMAGE_SIZE);
@@ -96,6 +97,85 @@ static void test_esc_firmware_update_rejects_out_of_order_chunk(void) {
     TEST_ASSERT_EQUAL(ESC_FIRMWARE_UPDATE_ERROR_BAD_SEQUENCE, error);
 }
 
+static void test_esc_firmware_update_tracks_recovery_transaction(void) {
+    static uint8_t image[ESC_FIRMWARE_IMAGE_SIZE];
+    uint8_t control[ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE];
+    make_valid_image(image);
+    make_control_packet(control, ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN, image);
+
+    esc_firmware_update_command_t command;
+    esc_firmware_update_error_t error;
+    TEST_ASSERT_TRUE(esc_firmware_update_parse_control(control, &command, &error));
+    TEST_ASSERT_EQUAL(ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN, command);
+    TEST_ASSERT_TRUE(esc_firmware_update_recovery_requested());
+
+    make_control_packet(control, ESC_FIRMWARE_UPDATE_COMMAND_ABORT, image);
+    TEST_ASSERT_TRUE(esc_firmware_update_parse_control(control, &command, &error));
+    TEST_ASSERT_FALSE(esc_firmware_update_recovery_requested());
+}
+
+static void test_esc_firmware_update_accepts_duplicate_last_chunk(void) {
+    static uint8_t image[ESC_FIRMWARE_IMAGE_SIZE];
+    uint8_t control[ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE];
+    uint8_t data[ESC_FIRMWARE_USB_DATA_PACKET_SIZE] = {0};
+    make_valid_image(image);
+    make_control_packet(control, ESC_FIRMWARE_UPDATE_COMMAND_BEGIN, image);
+
+    esc_firmware_update_command_t command;
+    esc_firmware_update_error_t error;
+    TEST_ASSERT_TRUE(esc_firmware_update_parse_control(control, &command, &error));
+    TEST_ASSERT_TRUE(esc_firmware_update_receiving());
+
+    data[0] = ESC_FIRMWARE_USB_DATA_START_BYTE;
+    data[3] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE;
+    memcpy(&data[4], image, ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE);
+    data[ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1] =
+        usb_calculate_checksum(data, ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1);
+
+    TEST_ASSERT_TRUE(esc_firmware_update_receive_data(data, &error));
+    TEST_ASSERT_EQUAL_UINT16(ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE,
+                             esc_firmware_update_received_size());
+    TEST_ASSERT_TRUE(esc_firmware_update_receive_data(data, &error));
+    TEST_ASSERT_EQUAL(ESC_FIRMWARE_UPDATE_ERROR_NONE, error);
+    TEST_ASSERT_EQUAL_UINT16(ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE,
+                             esc_firmware_update_received_size());
+
+    make_control_packet(control, ESC_FIRMWARE_UPDATE_COMMAND_ABORT, image);
+    TEST_ASSERT_TRUE(esc_firmware_update_parse_control(control, &command, &error));
+    TEST_ASSERT_FALSE(esc_firmware_update_receiving());
+}
+
+static void test_esc_firmware_update_rejects_partial_repeat_of_last_chunk(void) {
+    static uint8_t image[ESC_FIRMWARE_IMAGE_SIZE];
+    uint8_t control[ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE];
+    uint8_t data[ESC_FIRMWARE_USB_DATA_PACKET_SIZE] = {0};
+    make_valid_image(image);
+    make_control_packet(control, ESC_FIRMWARE_UPDATE_COMMAND_BEGIN, image);
+
+    esc_firmware_update_command_t command;
+    esc_firmware_update_error_t error;
+    TEST_ASSERT_TRUE(esc_firmware_update_parse_control(control, &command, &error));
+
+    data[0] = ESC_FIRMWARE_USB_DATA_START_BYTE;
+    data[3] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE;
+    memcpy(&data[4], image, ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE);
+    data[ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1] =
+        usb_calculate_checksum(data, ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1);
+    TEST_ASSERT_TRUE(esc_firmware_update_receive_data(data, &error));
+
+    const uint16_t partial_offset = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE / 2;
+    data[1] = (uint8_t)partial_offset;
+    data[2] = (uint8_t)(partial_offset >> 8);
+    data[3] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE / 2;
+    memcpy(&data[4], &image[partial_offset], data[3]);
+    memset(&data[4 + data[3]], 0, ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE - data[3]);
+    data[ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1] =
+        usb_calculate_checksum(data, ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1);
+
+    TEST_ASSERT_FALSE(esc_firmware_update_receive_data(data, &error));
+    TEST_ASSERT_EQUAL(ESC_FIRMWARE_UPDATE_ERROR_BAD_SEQUENCE, error);
+}
+
 static void test_esc_firmware_update_rejects_reset_handler_in_eeprom(void) {
     static uint8_t image[ESC_FIRMWARE_IMAGE_SIZE];
     uint8_t control[ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE];
@@ -161,6 +241,9 @@ void test_esc_firmware_update(void) {
     RUN_TEST(test_esc_firmware_crc32_matches_standard_vector);
     RUN_TEST(test_esc_firmware_update_accepts_complete_target_image);
     RUN_TEST(test_esc_firmware_update_rejects_out_of_order_chunk);
+    RUN_TEST(test_esc_firmware_update_tracks_recovery_transaction);
+    RUN_TEST(test_esc_firmware_update_accepts_duplicate_last_chunk);
+    RUN_TEST(test_esc_firmware_update_rejects_partial_repeat_of_last_chunk);
     RUN_TEST(test_esc_firmware_update_rejects_reset_handler_in_eeprom);
     RUN_TEST(test_esc_firmware_update_rejects_non_thumb_reset_handler);
     RUN_TEST(test_esc_firmware_update_rejects_image_crc_mismatch);

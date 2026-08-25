@@ -75,6 +75,16 @@ bool dshot_telemetry_usb_all_esc_versions_reported(void) {
     return true;
 }
 
+uint8_t dshot_telemetry_usb_esc_versions_reported_count(void) {
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < NUM_MOTORS; ++i) {
+        if (esc_versions_reported[i]) {
+            count++;
+        }
+    }
+    return count;
+}
+
 void dshot_telemetry_usb_flush(void) {
     if (telemetry_queue_tail == telemetry_queue_head) {
         return;
