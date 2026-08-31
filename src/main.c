@@ -26,6 +26,7 @@
 #define QUALITY_REPORT_INTERVAL_MS 100
 #define DSHOT_TELEMETRY_WARNING_DELAY_MS 500
 #define ESC_PROTOCOL_DETECTION_RESET_MS 2100
+#define PWM_SWITCH_NEUTRAL_HOLD_MS 1000
 #define PWM_DETECTION_SETTLE_MS 1000
 #define ESC_VERSION_DISCOVERY_ATTEMPTS 3
 #define ESC_VERSION_DISCOVERY_RETRY_MS 250
@@ -60,6 +61,19 @@ static uint8_t esc_version_discovery_attempts = 0;
 static absolute_time_t next_esc_version_discovery_time;
 
 static mcu_runtime_config_t current_config = {0};
+static mcu_runtime_config_t pending_config = {0};
+static uint8_t pending_config_request_id = 0;
+static bool pending_config_entering_dshot = false;
+
+typedef enum {
+    RUNTIME_CONFIG_TRANSITION_NONE = 0,
+    RUNTIME_CONFIG_TRANSITION_PWM_NEUTRAL_HOLD,
+    RUNTIME_CONFIG_TRANSITION_DETECTOR_RESET,
+    RUNTIME_CONFIG_TRANSITION_PWM_SETTLE,
+} runtime_config_transition_t;
+
+static runtime_config_transition_t runtime_config_transition = RUNTIME_CONFIG_TRANSITION_NONE;
+static absolute_time_t runtime_config_transition_deadline;
 
 static void send_quality_reports(void) {
     uint32_t now_ms = to_ms_since_boot(get_absolute_time());
@@ -128,11 +142,6 @@ static void init_pwm_protocol(void) {
     pwm_controller_init(&pwm_controller, pins, NUM_MOTORS,
                         pwm_translate_throttle(CMD_THROTTLE_NEUTRAL));
     pwm_initialized = true;
-
-    // PWM-capable ESCs need multiple 50 Hz neutral frames to detect the
-    // waveform and arm. Do not acknowledge the configuration until every
-    // channel has had enough time to observe those frames.
-    sleep_ms(PWM_DETECTION_SETTLE_MS);
 }
 
 static void init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
@@ -173,7 +182,6 @@ static void init_current_protocol(bool persist_3d_mode) {
     } else {
         init_pwm_protocol();
     }
-    protocol_initialized = true;
 }
 
 static bool dshot_telemetry_ready(void) {
@@ -199,11 +207,13 @@ static void service_esc_version_discovery(void) {
     }
     if (dshot_telemetry_usb_all_esc_versions_reported()) {
         esc_version_discovery_active = false;
+        dshot_telemetry_usb_send_discovery_complete();
         return;
     }
     if (esc_version_discovery_attempts >= ESC_VERSION_DISCOVERY_ATTEMPTS) {
         esc_version_discovery_active = false;
         uint8_t reported = dshot_telemetry_usb_esc_versions_reported_count();
+        dshot_telemetry_usb_send_discovery_complete();
         if (reported > 0) {
             log_warnf("ESC firmware version discovery received %u of %u responses", reported,
                       NUM_MOTORS);
@@ -250,16 +260,77 @@ static void hold_neutral_before_switch(void) {
         for (int i = 0; i < NUM_MOTORS; ++i) {
             pwm_set_throttle(&pwm_controller, i, pwm_translate_throttle(CMD_THROTTLE_NEUTRAL));
         }
-        sleep_ms(1000);
     }
 }
 
-static void apply_runtime_config(mcu_runtime_config_t config) {
+static void finish_runtime_config_apply(void) {
+    runtime_config_transition = RUNTIME_CONFIG_TRANSITION_NONE;
+    runtime_config_received = true;
+    protocol_initialized = true;
+    comm_timed_out = true;
+    mcu_runtime_config_send_status(pending_config_request_id, MCU_RUNTIME_CONFIG_STATE_APPLIED,
+                                   MCU_RUNTIME_CONFIG_ERROR_NONE, &current_config);
+    request_esc_firmware_versions_if_idle();
+    log_infof("Active thruster protocol: %s @ %u",
+              mcu_runtime_config_protocol_name(current_config.protocol),
+              current_config.dshot_speed);
+}
+
+static void initialize_pending_runtime_config(void) {
+    current_config = pending_config;
+    init_current_protocol(pending_config_entering_dshot);
+    if (current_config.protocol == THRUSTER_PROTOCOL_PWM) {
+        runtime_config_transition = RUNTIME_CONFIG_TRANSITION_PWM_SETTLE;
+        runtime_config_transition_deadline =
+            delayed_by_ms(get_absolute_time(), PWM_DETECTION_SETTLE_MS);
+        return;
+    }
+    finish_runtime_config_apply();
+}
+
+static void continue_runtime_config_apply_after_neutral(void) {
+    bool reset_detector = runtime_config_received && mcu_runtime_config_requires_detector_reset(
+                                                         &current_config, &pending_config);
+    if (runtime_config_received) {
+        deinit_protocol(current_config.protocol);
+    }
+    esc_firmware_update_reset();
+
+    if (reset_detector) {
+        // The ESC keeps the detected input decoder until it has seen two seconds
+        // without a valid signal while unarmed. This applies both to protocol
+        // changes and to DShot baud-rate changes after its frame timing has
+        // been calibrated. Keep every output low for slightly longer so all
+        // ESCs return to detection before the new waveform starts.
+        runtime_config_transition = RUNTIME_CONFIG_TRANSITION_DETECTOR_RESET;
+        runtime_config_transition_deadline =
+            delayed_by_ms(get_absolute_time(), ESC_PROTOCOL_DETECTION_RESET_MS);
+        return;
+    }
+    initialize_pending_runtime_config();
+}
+
+static void service_runtime_config_transition(void) {
+    if (runtime_config_transition == RUNTIME_CONFIG_TRANSITION_NONE) {
+        return;
+    }
+    absolute_time_t now = get_absolute_time();
+    if (absolute_time_diff_us(now, runtime_config_transition_deadline) > 0) {
+        return;
+    }
+    if (runtime_config_transition == RUNTIME_CONFIG_TRANSITION_PWM_NEUTRAL_HOLD) {
+        continue_runtime_config_apply_after_neutral();
+    } else if (runtime_config_transition == RUNTIME_CONFIG_TRANSITION_DETECTOR_RESET) {
+        initialize_pending_runtime_config();
+    } else {
+        finish_runtime_config_apply();
+    }
+}
+
+static void begin_runtime_config_apply(mcu_runtime_config_t config, uint8_t request_id) {
     mcu_runtime_config_validate(&config);
 
     bool switching = runtime_config_received && (dshot_initialized || pwm_initialized);
-    bool reset_detector = runtime_config_received &&
-                          mcu_runtime_config_requires_detector_reset(&current_config, &config);
     bool entering_dshot =
         config.protocol == THRUSTER_PROTOCOL_DSHOT &&
         (!runtime_config_received || current_config.protocol != THRUSTER_PROTOCOL_DSHOT);
@@ -269,29 +340,23 @@ static void apply_runtime_config(mcu_runtime_config_t config) {
 
     protocol_initialized = false;
     all_motor_telemetry_seen = false;
+    esc_version_discovery_active = false;
+    pending_config = config;
+    pending_config_request_id = request_id;
+    pending_config_entering_dshot = entering_dshot;
+    mcu_runtime_config_send_status(request_id, MCU_RUNTIME_CONFIG_STATE_APPLYING,
+                                   MCU_RUNTIME_CONFIG_ERROR_NONE, &pending_config);
 
-    if (runtime_config_received) {
-        deinit_protocol(current_config.protocol);
+    if (switching && current_config.protocol == THRUSTER_PROTOCOL_PWM && pwm_initialized) {
+        // PWM hardware keeps emitting the last neutral pulse while the main
+        // loop remains responsive to USB. Preserve the old safety interval
+        // before taking the output low without blocking status traffic.
+        runtime_config_transition = RUNTIME_CONFIG_TRANSITION_PWM_NEUTRAL_HOLD;
+        runtime_config_transition_deadline =
+            delayed_by_ms(get_absolute_time(), PWM_SWITCH_NEUTRAL_HOLD_MS);
+        return;
     }
-
-    if (reset_detector) {
-        // The ESC keeps the detected input decoder until it has seen two seconds
-        // without a valid signal while unarmed. This applies both to protocol
-        // changes and to DShot baud-rate changes after its frame timing has
-        // been calibrated. Keep every output low for slightly longer so all
-        // ESCs return to detection before the new waveform starts.
-        sleep_ms(ESC_PROTOCOL_DETECTION_RESET_MS);
-    }
-
-    esc_firmware_update_reset();
-    current_config = config;
-
-    init_current_protocol(entering_dshot);
-
-    runtime_config_received = true;
-    comm_timed_out = true;
-    mcu_runtime_config_send_status(&current_config);
-    request_esc_firmware_versions_if_idle();
+    continue_runtime_config_apply_after_neutral();
 }
 
 static void handle_command_packet(uint8_t *command_buf) {
@@ -325,22 +390,46 @@ static void handle_command_packet(uint8_t *command_buf) {
 }
 
 static void handle_config_packet(uint8_t *config_buf) {
-    mcu_runtime_config_t new_config;
-    if (!mcu_runtime_config_parse_packet(config_buf, USB_CONFIG_PACKET_SIZE, &new_config)) {
+    mcu_control_request_t request;
+    if (!mcu_runtime_config_parse_packet(config_buf, USB_CONFIG_PACKET_SIZE, &request)) {
+        return;
+    }
+
+    if (request.command == MCU_CONTROL_COMMAND_GET_INFO) {
+        mcu_runtime_config_send_release(request.request_id);
         return;
     }
 
     if (esc_firmware_recovery_mode) {
         log_warn("Ignoring runtime config while ESC firmware recovery is required");
+        mcu_runtime_config_send_status(request.request_id, MCU_RUNTIME_CONFIG_STATE_REJECTED,
+                                       MCU_RUNTIME_CONFIG_ERROR_ESC_RECOVERY_REQUIRED,
+                                       &request.config);
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_RECOVERY_REQUIRED, UINT8_MAX,
                                         ESC_FIRMWARE_UPDATE_ERROR_NONE, 1);
         return;
     }
 
-    if (runtime_config_received && new_config.protocol == current_config.protocol &&
-        new_config.dshot_speed == current_config.dshot_speed) {
+    if (runtime_config_transition != RUNTIME_CONFIG_TRANSITION_NONE &&
+        request.config.protocol == pending_config.protocol &&
+        request.config.dshot_speed == pending_config.dshot_speed) {
+        pending_config_request_id = request.request_id;
+        mcu_runtime_config_send_status(request.request_id, MCU_RUNTIME_CONFIG_STATE_APPLYING,
+                                       MCU_RUNTIME_CONFIG_ERROR_NONE, &pending_config);
+        return;
+    }
+
+    if (runtime_config_transition != RUNTIME_CONFIG_TRANSITION_NONE) {
+        mcu_runtime_config_send_status(request.request_id, MCU_RUNTIME_CONFIG_STATE_REJECTED,
+                                       MCU_RUNTIME_CONFIG_ERROR_APPLY_IN_PROGRESS, &request.config);
+        return;
+    }
+
+    if (runtime_config_received && request.config.protocol == current_config.protocol &&
+        request.config.dshot_speed == current_config.dshot_speed) {
         if (protocol_initialized) {
-            mcu_runtime_config_send_status(&current_config);
+            mcu_runtime_config_send_status(request.request_id, MCU_RUNTIME_CONFIG_STATE_APPLIED,
+                                           MCU_RUNTIME_CONFIG_ERROR_NONE, &current_config);
             request_esc_firmware_versions_if_idle();
         }
         return;
@@ -348,14 +437,12 @@ static void handle_config_packet(uint8_t *config_buf) {
 
     if (!all_commands_neutral()) {
         log_warn("Ignoring protocol change while thrusters active");
-        mcu_runtime_config_send_status(&current_config);
+        mcu_runtime_config_send_status(request.request_id, MCU_RUNTIME_CONFIG_STATE_REJECTED,
+                                       MCU_RUNTIME_CONFIG_ERROR_THRUSTERS_ACTIVE, &request.config);
         return;
     }
 
-    apply_runtime_config(new_config);
-    log_infof("Active thruster protocol: %s @ %u",
-              mcu_runtime_config_protocol_name(current_config.protocol),
-              current_config.dshot_speed);
+    begin_runtime_config_apply(request.config, request.request_id);
 }
 
 static bool runtime_dshot_ready(void) {
@@ -443,6 +530,7 @@ static void finish_successful_esc_firmware_flash(void) {
     esc_firmware_recovery_mode = false;
     if (runtime_config_received) {
         init_current_protocol(false);
+        protocol_initialized = true;
     }
     esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_COMPLETE, UINT8_MAX,
                                     ESC_FIRMWARE_UPDATE_ERROR_NONE,
@@ -458,6 +546,7 @@ static void finish_failed_esc_firmware_flash(bool was_recovery, bool modified, u
     esc_firmware_recovery_mode = recovery_required;
     if (!recovery_required && runtime_config_received) {
         init_current_protocol(false);
+        protocol_initialized = true;
     }
     esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, failed_motor, error,
                                     recovery_required ? 1u : 0u);
@@ -502,6 +591,13 @@ static void handle_esc_firmware_control_packet(const uint8_t *packet) {
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_ABORTED, UINT8_MAX,
                                         ESC_FIRMWARE_UPDATE_ERROR_NONE, 0);
         request_esc_firmware_versions_if_idle();
+        return;
+    }
+
+    if (command == ESC_FIRMWARE_UPDATE_COMMAND_QUERY_OFFSET) {
+        esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_RECEIVED, UINT8_MAX,
+                                        ESC_FIRMWARE_UPDATE_ERROR_NONE,
+                                        esc_firmware_update_received_size());
         return;
     }
 
@@ -604,7 +700,9 @@ int main(void) {
         usb_check_timeout(last_comm_time, command_values, NUM_MOTORS, CMD_THROTTLE_NEUTRAL,
                           &comm_timed_out);
 
-        if (!runtime_config_received) {
+        service_runtime_config_transition();
+
+        if (!runtime_config_received || !protocol_initialized) {
             continue;
         }
 

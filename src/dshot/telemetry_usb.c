@@ -85,6 +85,11 @@ uint8_t dshot_telemetry_usb_esc_versions_reported_count(void) {
     return count;
 }
 
+void dshot_telemetry_usb_send_discovery_complete(void) {
+    dshot_telemetry_usb_send(UINT8_MAX, TELEMETRY_TYPE_ESC_VERSION_DISCOVERY_COMPLETE,
+                             dshot_telemetry_usb_esc_versions_reported_count());
+}
+
 void dshot_telemetry_usb_flush(void) {
     if (telemetry_queue_tail == telemetry_queue_head) {
         return;

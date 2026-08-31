@@ -36,6 +36,14 @@ target_include_directories(
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_compile_definitions(
+    ${FIRMWARE_EXE_NAME}
+    PRIVATE
+        CFG_TUD_CDC_RX_BUFSIZE=512
+        CFG_TUD_CDC_TX_BUFSIZE=512
+        PICO_STDIO_USB_STDOUT_TIMEOUT_US=2000000
+)
+
 pico_generate_pio_header(${FIRMWARE_EXE_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/src/dshot/dshot.pio)
 
 target_link_libraries(${FIRMWARE_EXE_NAME}

@@ -9,16 +9,17 @@ static void make_control_packet(uint8_t *packet, esc_firmware_update_command_t c
     memset(packet, 0, ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE);
     packet[0] = ESC_FIRMWARE_USB_CONTROL_START_BYTE;
     packet[1] = (uint8_t)command;
+    packet[2] = 1;
     if (command == ESC_FIRMWARE_UPDATE_COMMAND_BEGIN ||
         command == ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN) {
-        packet[2] = (uint8_t)ESC_FIRMWARE_IMAGE_SIZE;
-        packet[3] = (uint8_t)(ESC_FIRMWARE_IMAGE_SIZE >> 8);
+        packet[3] = (uint8_t)ESC_FIRMWARE_IMAGE_SIZE;
+        packet[4] = (uint8_t)(ESC_FIRMWARE_IMAGE_SIZE >> 8);
         uint32_t crc = esc_firmware_update_crc32(image, ESC_FIRMWARE_IMAGE_SIZE);
-        packet[4] = (uint8_t)crc;
-        packet[5] = (uint8_t)(crc >> 8);
-        packet[6] = (uint8_t)(crc >> 16);
-        packet[7] = (uint8_t)(crc >> 24);
-        packet[8] = ESC_FIRMWARE_TARGET_F421_PB4_32K;
+        packet[5] = (uint8_t)crc;
+        packet[6] = (uint8_t)(crc >> 8);
+        packet[7] = (uint8_t)(crc >> 16);
+        packet[8] = (uint8_t)(crc >> 24);
+        packet[9] = ESC_FIRMWARE_TARGET_F421_PB4_32K;
     }
     packet[ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE - 1] =
         usb_calculate_checksum(packet, ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE - 1);
@@ -26,23 +27,28 @@ static void make_control_packet(uint8_t *packet, esc_firmware_update_command_t c
 
 static void receive_image(const uint8_t *image) {
     uint8_t packet[ESC_FIRMWARE_USB_DATA_PACKET_SIZE];
+    uint16_t sequence = 1;
     for (uint16_t offset = 0; offset < ESC_FIRMWARE_IMAGE_SIZE;
          offset += ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE) {
         memset(packet, 0, sizeof(packet));
         packet[0] = ESC_FIRMWARE_USB_DATA_START_BYTE;
-        packet[1] = (uint8_t)offset;
-        packet[2] = (uint8_t)(offset >> 8);
+        packet[1] = 1;
+        packet[2] = (uint8_t)sequence;
+        packet[3] = (uint8_t)(sequence >> 8);
+        packet[4] = (uint8_t)offset;
+        packet[5] = (uint8_t)(offset >> 8);
         uint16_t remaining = ESC_FIRMWARE_IMAGE_SIZE - offset;
         uint8_t length = remaining < ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE
                              ? (uint8_t)remaining
                              : ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE;
-        packet[3] = length;
-        memcpy(&packet[4], &image[offset], length);
+        packet[6] = length;
+        memcpy(&packet[7], &image[offset], length);
         packet[ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1] =
             usb_calculate_checksum(packet, ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1);
         esc_firmware_update_error_t error;
         TEST_ASSERT_TRUE(esc_firmware_update_receive_data(packet, &error));
         TEST_ASSERT_EQUAL(ESC_FIRMWARE_UPDATE_ERROR_NONE, error);
+        sequence++;
     }
 }
 
@@ -88,8 +94,10 @@ static void test_esc_firmware_update_rejects_out_of_order_chunk(void) {
     esc_firmware_update_error_t error;
     TEST_ASSERT_TRUE(esc_firmware_update_parse_control(control, &command, &error));
     data[0] = ESC_FIRMWARE_USB_DATA_START_BYTE;
-    data[1] = 128;
-    data[3] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE;
+    data[1] = 1;
+    data[2] = 1;
+    data[4] = 128;
+    data[6] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE;
     data[ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1] =
         usb_calculate_checksum(data, ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1);
 
@@ -127,8 +135,10 @@ static void test_esc_firmware_update_accepts_duplicate_last_chunk(void) {
     TEST_ASSERT_TRUE(esc_firmware_update_receiving());
 
     data[0] = ESC_FIRMWARE_USB_DATA_START_BYTE;
-    data[3] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE;
-    memcpy(&data[4], image, ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE);
+    data[1] = 1;
+    data[2] = 1;
+    data[6] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE;
+    memcpy(&data[7], image, ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE);
     data[ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1] =
         usb_calculate_checksum(data, ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1);
 
@@ -157,18 +167,20 @@ static void test_esc_firmware_update_rejects_partial_repeat_of_last_chunk(void) 
     TEST_ASSERT_TRUE(esc_firmware_update_parse_control(control, &command, &error));
 
     data[0] = ESC_FIRMWARE_USB_DATA_START_BYTE;
-    data[3] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE;
-    memcpy(&data[4], image, ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE);
+    data[1] = 1;
+    data[2] = 1;
+    data[6] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE;
+    memcpy(&data[7], image, ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE);
     data[ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1] =
         usb_calculate_checksum(data, ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1);
     TEST_ASSERT_TRUE(esc_firmware_update_receive_data(data, &error));
 
     const uint16_t partial_offset = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE / 2;
-    data[1] = (uint8_t)partial_offset;
-    data[2] = (uint8_t)(partial_offset >> 8);
-    data[3] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE / 2;
-    memcpy(&data[4], &image[partial_offset], data[3]);
-    memset(&data[4 + data[3]], 0, ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE - data[3]);
+    data[4] = (uint8_t)partial_offset;
+    data[5] = (uint8_t)(partial_offset >> 8);
+    data[6] = ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE / 2;
+    memcpy(&data[7], &image[partial_offset], data[6]);
+    memset(&data[7 + data[6]], 0, ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE - data[6]);
     data[ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1] =
         usb_calculate_checksum(data, ESC_FIRMWARE_USB_DATA_PACKET_SIZE - 1);
 

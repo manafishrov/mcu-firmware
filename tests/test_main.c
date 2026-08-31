@@ -1,3 +1,4 @@
+#include "esc_firmware/update.h"
 #include "unity/unity.h"
 
 extern void test_usb_comm(void);
@@ -9,7 +10,9 @@ extern void test_pwm_driver(void);
 extern void test_esc_firmware_update(void);
 extern void test_esc_version_telemetry(void);
 
-void setUp(void) {}
+void setUp(void) {
+    esc_firmware_update_reset();
+}
 
 void tearDown(void) {}
 

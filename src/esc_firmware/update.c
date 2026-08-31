@@ -16,6 +16,8 @@ static uint16_t received_size;
 static uint32_t expected_crc32;
 static bool receiving;
 static bool recovery_requested;
+static uint8_t transaction_id;
+static uint16_t last_sequence;
 static uint16_t last_chunk_offset;
 static uint8_t last_chunk_length;
 static bool last_chunk_valid;
@@ -42,6 +44,8 @@ void esc_firmware_update_reset(void) {
     expected_crc32 = 0;
     receiving = false;
     recovery_requested = false;
+    transaction_id = 0;
+    last_sequence = 0;
     last_chunk_offset = 0;
     last_chunk_length = 0;
     last_chunk_valid = false;
@@ -58,13 +62,23 @@ bool esc_firmware_update_parse_control(const uint8_t *packet,
     }
 
     *command = (esc_firmware_update_command_t)packet[1];
+    uint8_t request_transaction_id = packet[2];
     if (*command == ESC_FIRMWARE_UPDATE_COMMAND_ABORT) {
         esc_firmware_update_reset();
         *error = ESC_FIRMWARE_UPDATE_ERROR_NONE;
         return true;
     }
+    if (*command == ESC_FIRMWARE_UPDATE_COMMAND_QUERY_OFFSET) {
+        if (!receiving || request_transaction_id != transaction_id) {
+            *error = ESC_FIRMWARE_UPDATE_ERROR_BAD_SEQUENCE;
+            return false;
+        }
+        *error = ESC_FIRMWARE_UPDATE_ERROR_NONE;
+        return true;
+    }
     if (*command == ESC_FIRMWARE_UPDATE_COMMAND_COMMIT) {
-        if (!receiving || received_size != expected_size) {
+        if (!receiving || request_transaction_id != transaction_id ||
+            received_size != expected_size) {
             *error = ESC_FIRMWARE_UPDATE_ERROR_BAD_SEQUENCE;
             return false;
         }
@@ -77,17 +91,29 @@ bool esc_firmware_update_parse_control(const uint8_t *packet,
         return false;
     }
 
-    uint16_t size = read_le16(&packet[2]);
-    if (packet[8] != ESC_FIRMWARE_TARGET_F421_PB4_32K || packet[9] != 0 || packet[10] != 0 ||
+    uint16_t size = read_le16(&packet[3]);
+    uint32_t crc32 = read_le32(&packet[5]);
+    if (packet[9] != ESC_FIRMWARE_TARGET_F421_PB4_32K || packet[10] != 0 ||
         size != ESC_FIRMWARE_IMAGE_SIZE) {
         *error = ESC_FIRMWARE_UPDATE_ERROR_INVALID_IMAGE;
         return false;
     }
 
+    bool duplicate_begin =
+        receiving && request_transaction_id == transaction_id && size == expected_size &&
+        crc32 == expected_crc32 &&
+        recovery_requested == (*command == ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN);
+    if (duplicate_begin) {
+        *error = ESC_FIRMWARE_UPDATE_ERROR_NONE;
+        return true;
+    }
+
     expected_size = size;
     received_size = 0;
-    expected_crc32 = read_le32(&packet[4]);
+    expected_crc32 = crc32;
     receiving = true;
+    transaction_id = request_transaction_id;
+    last_sequence = 0;
     recovery_requested = *command == ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN;
     last_chunk_valid = false;
     *error = ESC_FIRMWARE_UPDATE_ERROR_NONE;
@@ -106,10 +132,12 @@ bool esc_firmware_update_receive_data(const uint8_t *packet, esc_firmware_update
         return false;
     }
 
-    uint16_t offset = read_le16(&packet[1]);
-    uint8_t length = packet[3];
+    uint8_t packet_transaction_id = packet[1];
+    uint16_t sequence = read_le16(&packet[2]);
+    uint16_t offset = read_le16(&packet[4]);
+    uint8_t length = packet[6];
     if (length == 0 || length > ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE ||
-        (uint32_t)offset + length > expected_size) {
+        (uint32_t)offset + length > expected_size || packet_transaction_id != transaction_id) {
         *error = ESC_FIRMWARE_UPDATE_ERROR_BAD_SEQUENCE;
         return false;
     }
@@ -118,17 +146,18 @@ bool esc_firmware_update_receive_data(const uint8_t *packet, esc_firmware_update
     // identical repeat of the most recently stored chunk without advancing
     // the image offset so that one missed USB status packet is recoverable.
     if (last_chunk_valid && offset == last_chunk_offset && length == last_chunk_length &&
-        memcmp(&image_buffer[offset], &packet[4], length) == 0) {
+        sequence == last_sequence && memcmp(&image_buffer[offset], &packet[7], length) == 0) {
         *error = ESC_FIRMWARE_UPDATE_ERROR_NONE;
         return true;
     }
-    if (offset != received_size) {
+    if (offset != received_size || sequence != (uint16_t)(last_sequence + 1)) {
         *error = ESC_FIRMWARE_UPDATE_ERROR_BAD_SEQUENCE;
         return false;
     }
 
-    memcpy(&image_buffer[offset], &packet[4], length);
+    memcpy(&image_buffer[offset], &packet[7], length);
     received_size += length;
+    last_sequence = sequence;
     last_chunk_offset = offset;
     last_chunk_length = length;
     last_chunk_valid = true;
@@ -194,6 +223,14 @@ uint16_t esc_firmware_update_received_size(void) {
     return received_size;
 }
 
+uint8_t esc_firmware_update_transaction_id(void) {
+    return transaction_id;
+}
+
+uint16_t esc_firmware_update_last_sequence(void) {
+    return last_sequence;
+}
+
 void esc_firmware_update_send_status(esc_firmware_update_status_t status, uint8_t motor,
                                      esc_firmware_update_error_t error, uint32_t value) {
     uint8_t packet[ESC_FIRMWARE_USB_STATUS_PACKET_SIZE] = {
@@ -211,6 +248,9 @@ void esc_firmware_update_send_status(esc_firmware_update_status_t status, uint8_
         0,
     };
     write_le32(&packet[4], value);
+    packet[8] = transaction_id;
+    packet[9] = (uint8_t)last_sequence;
+    packet[10] = (uint8_t)(last_sequence >> 8);
     packet[ESC_FIRMWARE_USB_STATUS_PACKET_SIZE - 1] =
         usb_calculate_checksum(packet, ESC_FIRMWARE_USB_STATUS_PACKET_SIZE - 1);
     fwrite(packet, 1, sizeof(packet), stdout);

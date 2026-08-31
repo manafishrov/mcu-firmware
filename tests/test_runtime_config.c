@@ -82,43 +82,54 @@ static void test_detector_reset_ignores_inactive_pwm_dshot_speed(void) {
 
 static void test_parse_packet_accepts_valid_packet_and_populates_config(void) {
     uint8_t packet[USB_CONFIG_PACKET_SIZE] = {
-        USB_CONFIG_START_BYTE, THRUSTER_PROTOCOL_PWM, 150, 0, 0,
+        USB_CONFIG_START_BYTE,
+        MCU_CONTROL_COMMAND_APPLY_CONFIG,
+        42,
+        THRUSTER_PROTOCOL_PWM,
+        150,
+        0,
+        0,
     };
-    mcu_runtime_config_t config = {0};
+    mcu_control_request_t request = {0};
 
     packet[USB_CONFIG_PACKET_SIZE - 1] = usb_calculate_checksum(packet, USB_CONFIG_PACKET_SIZE - 1);
 
-    TEST_ASSERT_TRUE(mcu_runtime_config_parse_packet(packet, sizeof(packet), &config));
-    TEST_ASSERT_EQUAL_INT(THRUSTER_PROTOCOL_PWM, config.protocol);
-    TEST_ASSERT_EQUAL_UINT16(150, config.dshot_speed);
+    TEST_ASSERT_TRUE(mcu_runtime_config_parse_packet(packet, sizeof(packet), &request));
+    TEST_ASSERT_EQUAL_INT(MCU_CONTROL_COMMAND_APPLY_CONFIG, request.command);
+    TEST_ASSERT_EQUAL_UINT8(42, request.request_id);
+    TEST_ASSERT_EQUAL_INT(THRUSTER_PROTOCOL_PWM, request.config.protocol);
+    TEST_ASSERT_EQUAL_UINT16(150, request.config.dshot_speed);
 }
 
 static void test_parse_packet_rejects_wrong_size(void) {
     const uint8_t packet[] = {USB_CONFIG_START_BYTE, THRUSTER_PROTOCOL_DSHOT, 0x58, 0x02};
-    mcu_runtime_config_t config = {0};
+    mcu_control_request_t request = {0};
 
-    TEST_ASSERT_FALSE(mcu_runtime_config_parse_packet(packet, sizeof(packet), &config));
+    TEST_ASSERT_FALSE(mcu_runtime_config_parse_packet(packet, sizeof(packet), &request));
 }
 
 static void test_parse_packet_rejects_wrong_start_byte(void) {
-    uint8_t packet[USB_CONFIG_PACKET_SIZE] = {0x00, THRUSTER_PROTOCOL_DSHOT, 0x58, 0x02, 0};
-    mcu_runtime_config_t config = {0};
+    uint8_t packet[USB_CONFIG_PACKET_SIZE] = {
+        0x00, MCU_CONTROL_COMMAND_APPLY_CONFIG, 1, THRUSTER_PROTOCOL_DSHOT, 0x58, 0x02, 0,
+    };
+    mcu_control_request_t request = {0};
 
     packet[USB_CONFIG_PACKET_SIZE - 1] = usb_calculate_checksum(packet, USB_CONFIG_PACKET_SIZE - 1);
 
-    TEST_ASSERT_FALSE(mcu_runtime_config_parse_packet(packet, sizeof(packet), &config));
+    TEST_ASSERT_FALSE(mcu_runtime_config_parse_packet(packet, sizeof(packet), &request));
 }
 
 static void test_build_release_packet_reports_exact_release_identity(void) {
     uint8_t packet[USB_RELEASE_VERSION_MAX_LENGTH + USB_RELEASE_VERSION_PACKET_OVERHEAD] = {0};
     const char expected[] = "1.0.2-rc.3";
 
-    const size_t packet_size = mcu_runtime_config_build_release_packet(packet, sizeof(packet));
+    const size_t packet_size = mcu_runtime_config_build_release_packet(packet, sizeof(packet), 42);
 
     TEST_ASSERT_EQUAL_UINT(sizeof(expected) - 1 + USB_RELEASE_VERSION_PACKET_OVERHEAD, packet_size);
     TEST_ASSERT_EQUAL_HEX8(USB_RELEASE_VERSION_START_BYTE, packet[0]);
-    TEST_ASSERT_EQUAL_UINT8(sizeof(expected) - 1, packet[1]);
-    TEST_ASSERT_EQUAL_MEMORY(expected, &packet[2], sizeof(expected) - 1);
+    TEST_ASSERT_EQUAL_UINT8(42, packet[1]);
+    TEST_ASSERT_EQUAL_UINT8(sizeof(expected) - 1, packet[2]);
+    TEST_ASSERT_EQUAL_MEMORY(expected, &packet[3], sizeof(expected) - 1);
     TEST_ASSERT_EQUAL_HEX8(usb_calculate_checksum(packet, packet_size - 1),
                            packet[packet_size - 1]);
 }
@@ -126,7 +137,7 @@ static void test_build_release_packet_reports_exact_release_identity(void) {
 static void test_build_release_packet_rejects_short_buffer(void) {
     uint8_t packet[4] = {0};
 
-    TEST_ASSERT_EQUAL_UINT(0, mcu_runtime_config_build_release_packet(packet, sizeof(packet)));
+    TEST_ASSERT_EQUAL_UINT(0, mcu_runtime_config_build_release_packet(packet, sizeof(packet), 1));
 }
 
 static void test_build_status_packet_reports_runtime_config_without_numeric_version(void) {
@@ -135,15 +146,23 @@ static void test_build_status_packet_reports_runtime_config_without_numeric_vers
         .protocol = THRUSTER_PROTOCOL_DSHOT,
         .dshot_speed = 600,
     };
-    const uint8_t expected[] = {0xD5, 0x01, 0x58, 0x02, 0x8E};
+    const uint8_t expected[] = {0xD5,
+                                42,
+                                MCU_RUNTIME_CONFIG_STATE_APPLIED,
+                                MCU_RUNTIME_CONFIG_ERROR_NONE,
+                                THRUSTER_PROTOCOL_DSHOT,
+                                0x58,
+                                0x02,
+                                0xA6};
 
-    const size_t packet_size =
-        mcu_runtime_config_build_status_packet(packet, sizeof(packet), &config);
+    const size_t packet_size = mcu_runtime_config_build_status_packet(
+        packet, sizeof(packet), 42, MCU_RUNTIME_CONFIG_STATE_APPLIED, MCU_RUNTIME_CONFIG_ERROR_NONE,
+        &config);
 
     TEST_ASSERT_EQUAL_UINT(USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE, packet_size);
     TEST_ASSERT_EQUAL_HEX8(USB_RUNTIME_CONFIG_STATUS_START_BYTE, packet[0]);
-    TEST_ASSERT_EQUAL_UINT8(THRUSTER_PROTOCOL_DSHOT, packet[1]);
-    TEST_ASSERT_EQUAL_UINT16(600, (uint16_t)packet[2] | ((uint16_t)packet[3] << 8));
+    TEST_ASSERT_EQUAL_UINT8(THRUSTER_PROTOCOL_DSHOT, packet[4]);
+    TEST_ASSERT_EQUAL_UINT16(600, (uint16_t)packet[5] | ((uint16_t)packet[6] << 8));
     TEST_ASSERT_EQUAL_HEX8(usb_calculate_checksum(packet, packet_size - 1),
                            packet[packet_size - 1]);
     TEST_ASSERT_EQUAL_MEMORY(expected, packet, sizeof(expected));
@@ -151,11 +170,17 @@ static void test_build_status_packet_reports_runtime_config_without_numeric_vers
 
 static void test_parse_packet_rejects_bad_checksum(void) {
     const uint8_t packet[USB_CONFIG_PACKET_SIZE] = {
-        USB_CONFIG_START_BYTE, THRUSTER_PROTOCOL_DSHOT, 0x58, 0x02, 0xFF,
+        USB_CONFIG_START_BYTE,
+        MCU_CONTROL_COMMAND_APPLY_CONFIG,
+        1,
+        THRUSTER_PROTOCOL_DSHOT,
+        0x58,
+        0x02,
+        0xFF,
     };
-    mcu_runtime_config_t config = {0};
+    mcu_control_request_t request = {0};
 
-    TEST_ASSERT_FALSE(mcu_runtime_config_parse_packet(packet, sizeof(packet), &config));
+    TEST_ASSERT_FALSE(mcu_runtime_config_parse_packet(packet, sizeof(packet), &request));
 }
 
 static void test_protocol_name_returns_expected_strings(void) {

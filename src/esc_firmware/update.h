@@ -10,8 +10,8 @@
 #define ESC_FIRMWARE_USB_STATUS_START_BYTE 0xE9
 
 #define ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE 12
-#define ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE 128
-#define ESC_FIRMWARE_USB_DATA_PACKET_SIZE (1 + 2 + 1 + ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE + 1)
+#define ESC_FIRMWARE_USB_DATA_PAYLOAD_SIZE 56
+#define ESC_FIRMWARE_USB_DATA_PACKET_SIZE 64
 #define ESC_FIRMWARE_USB_STATUS_PACKET_SIZE 12
 
 #define ESC_FIRMWARE_APPLICATION_ADDRESS 0x08001000u
@@ -24,6 +24,7 @@ typedef enum {
     ESC_FIRMWARE_UPDATE_COMMAND_COMMIT = 2,
     ESC_FIRMWARE_UPDATE_COMMAND_ABORT = 3,
     ESC_FIRMWARE_UPDATE_COMMAND_RECOVER_BEGIN = 4,
+    ESC_FIRMWARE_UPDATE_COMMAND_QUERY_OFFSET = 5,
 } esc_firmware_update_command_t;
 
 typedef enum {
@@ -63,6 +64,8 @@ bool esc_firmware_update_validate_image(esc_firmware_update_error_t *error);
 const uint8_t *esc_firmware_update_image(void);
 uint16_t esc_firmware_update_image_size(void);
 uint16_t esc_firmware_update_received_size(void);
+uint8_t esc_firmware_update_transaction_id(void);
+uint16_t esc_firmware_update_last_sequence(void);
 uint32_t esc_firmware_update_crc32(const uint8_t *data, size_t length);
 void esc_firmware_update_send_status(esc_firmware_update_status_t status, uint8_t motor,
                                      esc_firmware_update_error_t error, uint32_t value);

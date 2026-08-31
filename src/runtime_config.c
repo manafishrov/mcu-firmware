@@ -52,7 +52,7 @@ bool mcu_runtime_config_requires_detector_reset(const mcu_runtime_config_t *curr
 }
 
 bool mcu_runtime_config_parse_packet(const uint8_t *packet, size_t packet_size,
-                                     mcu_runtime_config_t *out_config) {
+                                     mcu_control_request_t *out_request) {
     if (packet_size != USB_CONFIG_PACKET_SIZE || packet[0] != USB_CONFIG_START_BYTE) {
         return false;
     }
@@ -63,9 +63,16 @@ bool mcu_runtime_config_parse_packet(const uint8_t *packet, size_t packet_size,
         return false;
     }
 
-    out_config->protocol = (thruster_protocol_t)packet[1];
-    out_config->dshot_speed = (uint16_t)packet[2] | ((uint16_t)packet[3] << 8);
-    mcu_runtime_config_validate(out_config);
+    mcu_control_command_t command = (mcu_control_command_t)packet[1];
+    if (command != MCU_CONTROL_COMMAND_APPLY_CONFIG && command != MCU_CONTROL_COMMAND_GET_INFO) {
+        return false;
+    }
+
+    out_request->command = command;
+    out_request->request_id = packet[2];
+    out_request->config.protocol = (thruster_protocol_t)packet[3];
+    out_request->config.dshot_speed = (uint16_t)packet[4] | ((uint16_t)packet[5] << 8);
+    mcu_runtime_config_validate(&out_request->config);
     return true;
 }
 
@@ -73,7 +80,8 @@ const char *mcu_runtime_config_protocol_name(thruster_protocol_t protocol) {
     return protocol == THRUSTER_PROTOCOL_PWM ? "PWM" : "DShot";
 }
 
-size_t mcu_runtime_config_build_release_packet(uint8_t *packet, size_t packet_capacity) {
+size_t mcu_runtime_config_build_release_packet(uint8_t *packet, size_t packet_capacity,
+                                               uint8_t request_id) {
     const size_t packet_size =
         MCU_FIRMWARE_RELEASE_VERSION_LENGTH + USB_RELEASE_VERSION_PACKET_OVERHEAD;
     if (packet == NULL || packet_capacity < packet_size) {
@@ -81,13 +89,16 @@ size_t mcu_runtime_config_build_release_packet(uint8_t *packet, size_t packet_ca
     }
 
     packet[0] = USB_RELEASE_VERSION_START_BYTE;
-    packet[1] = MCU_FIRMWARE_RELEASE_VERSION_LENGTH;
-    memcpy(&packet[2], MCU_FIRMWARE_RELEASE_VERSION, MCU_FIRMWARE_RELEASE_VERSION_LENGTH);
+    packet[1] = request_id;
+    packet[2] = MCU_FIRMWARE_RELEASE_VERSION_LENGTH;
+    memcpy(&packet[3], MCU_FIRMWARE_RELEASE_VERSION, MCU_FIRMWARE_RELEASE_VERSION_LENGTH);
     packet[packet_size - 1] = usb_calculate_checksum(packet, packet_size - 1);
     return packet_size;
 }
 
 size_t mcu_runtime_config_build_status_packet(uint8_t *packet, size_t packet_capacity,
+                                              uint8_t request_id, mcu_runtime_config_state_t state,
+                                              mcu_runtime_config_error_t error,
                                               const mcu_runtime_config_t *config) {
     if (packet == NULL || config == NULL ||
         packet_capacity < USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE) {
@@ -95,24 +106,32 @@ size_t mcu_runtime_config_build_status_packet(uint8_t *packet, size_t packet_cap
     }
 
     packet[0] = USB_RUNTIME_CONFIG_STATUS_START_BYTE;
-    packet[1] = (uint8_t)config->protocol;
-    packet[2] = (uint8_t)(config->dshot_speed & 0xFF);
-    packet[3] = (uint8_t)(config->dshot_speed >> 8);
-    packet[4] = usb_calculate_checksum(packet, USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE - 1);
+    packet[1] = request_id;
+    packet[2] = (uint8_t)state;
+    packet[3] = (uint8_t)error;
+    packet[4] = (uint8_t)config->protocol;
+    packet[5] = (uint8_t)(config->dshot_speed & 0xFF);
+    packet[6] = (uint8_t)(config->dshot_speed >> 8);
+    packet[7] = usb_calculate_checksum(packet, USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE - 1);
     return USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE;
 }
 
-void mcu_runtime_config_send_status(const mcu_runtime_config_t *config) {
+void mcu_runtime_config_send_release(uint8_t request_id) {
     uint8_t release_packet[USB_RELEASE_VERSION_MAX_LENGTH + USB_RELEASE_VERSION_PACKET_OVERHEAD];
     const size_t release_packet_size =
-        mcu_runtime_config_build_release_packet(release_packet, sizeof(release_packet));
+        mcu_runtime_config_build_release_packet(release_packet, sizeof(release_packet), request_id);
     if (release_packet_size > 0) {
         fwrite(release_packet, 1, release_packet_size, stdout);
     }
+    fflush(stdout);
+}
 
+void mcu_runtime_config_send_status(uint8_t request_id, mcu_runtime_config_state_t state,
+                                    mcu_runtime_config_error_t error,
+                                    const mcu_runtime_config_t *config) {
     uint8_t status_packet[USB_RUNTIME_CONFIG_STATUS_PACKET_SIZE];
-    const size_t status_packet_size =
-        mcu_runtime_config_build_status_packet(status_packet, sizeof(status_packet), config);
+    const size_t status_packet_size = mcu_runtime_config_build_status_packet(
+        status_packet, sizeof(status_packet), request_id, state, error, config);
     if (status_packet_size > 0) {
         fwrite(status_packet, 1, status_packet_size, stdout);
     }
