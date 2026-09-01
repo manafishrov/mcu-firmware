@@ -31,6 +31,14 @@
 #define ESC_VERSION_DISCOVERY_ATTEMPTS 3
 #define ESC_VERSION_DISCOVERY_RETRY_MS 250
 
+// USB stdout carries framed binary packets. CR/LF translation inserts an
+// extra byte whenever a packet contains 0x0A and corrupts the wire protocol.
+#ifndef PICO_STDIO_USB_DEFAULT_CRLF
+#error "PICO_STDIO_USB_DEFAULT_CRLF must be configured for binary USB output"
+#endif
+_Static_assert(PICO_STDIO_USB_DEFAULT_CRLF == 0,
+               "USB CR/LF translation must stay disabled for binary packets");
+
 static uint16_t command_values[NUM_MOTORS] = {CMD_THROTTLE_NEUTRAL};
 static absolute_time_t last_comm_time;
 static bool comm_timed_out = true;
