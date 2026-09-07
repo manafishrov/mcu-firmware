@@ -672,11 +672,13 @@ static void service_current_reporting(void) {
     static uint32_t last_report_ms;
     static bool reported;
     uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    bool upload_active = esc_firmware_update_receiving();
     bool enabled = runtime_config_received && protocol_initialized &&
                    current_config.protocol == THRUSTER_PROTOCOL_DSHOT &&
-                   !esc_firmware_recovery_mode;
+                   !esc_firmware_recovery_mode && !upload_active;
     current_sensing_service(command_values, enabled, now_ms);
-    if (esc_firmware_recovery_mode || (reported && now_ms - last_report_ms < 100u)) {
+    if (esc_firmware_recovery_mode || upload_active ||
+        (reported && now_ms - last_report_ms < 100u)) {
         return;
     }
     reported = true;

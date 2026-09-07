@@ -150,5 +150,79 @@ int telemetry_enable_command(void) { return DSHOT_EXTENDED_TELEMETRY_ENABLE; }
             self.assertEqual(self.dll.sent_command(0), self.dll.telemetry_enable_command())
 
 
+class CurrentReportingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        main = (ROOT / "src/main.c").read_text()
+        start = main.index("static void service_current_reporting(")
+        service = main[start:main.index("int main(void)", start)]
+        harness = r'''
+#include <stdbool.h>
+#include <stdint.h>
+#include "dshot/current_sensing.h"
+#include "dshot/telemetry_usb.h"
+#define THRUSTER_PROTOCOL_DSHOT 1
+static bool runtime_config_received = true, protocol_initialized = true;
+static bool esc_firmware_recovery_mode, uploading, seen_enabled;
+static struct { int protocol; } current_config = {THRUSTER_PROTOCOL_DSHOT};
+static uint16_t command_values[NUM_MOTORS];
+static uint32_t now_ms;
+static int reports, flushes, service_calls;
+uint32_t get_absolute_time(void) { return now_ms; }
+uint32_t to_ms_since_boot(uint32_t value) { return value; }
+bool esc_firmware_update_receiving(void) { return uploading; }
+void current_sensing_service(const uint16_t values[NUM_MOTORS], bool enabled, uint32_t now) {
+    (void)values; (void)now; seen_enabled = enabled; service_calls++;
+}
+int32_t current_sensing_current_ma(uint8_t board, uint32_t now) {
+    (void)board; (void)now; return 1000;
+}
+int32_t current_sensing_baseline_ma(uint8_t board) { (void)board; return 91000; }
+void dshot_telemetry_usb_send(uint8_t motor, uint8_t type, int32_t value) {
+    (void)motor; (void)type; (void)value; reports++;
+}
+void dshot_telemetry_usb_flush(void) { flushes++; }
+''' + service + r'''
+void run_reporting(int upload, int recovery) {
+    (void)pio0; (void)pio1;
+    uploading = upload != 0; esc_firmware_recovery_mode = recovery != 0;
+    now_ms += 1000; reports = flushes = service_calls = 0;
+    service_current_reporting();
+}
+int report_count(void) { return reports; }
+int flush_count(void) { return flushes; }
+int sensing_enabled(void) { return seen_enabled; }
+int sensing_calls(void) { return service_calls; }
+'''
+        cls.temp = tempfile.TemporaryDirectory(prefix="pico-current-reporting-")
+        cls.addClassCleanup(cls.temp.cleanup)
+        source = Path(cls.temp.name) / "reporting.c"
+        library = source.with_suffix(".so")
+        source.write_text(harness)
+        subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+            "-std=c11", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
+            "-I", str(ROOT / "tests/mocks"), "-I", str(ROOT / "src"),
+            str(source), "-o", str(library)
+        ], check=True)
+        cls.dll = ctypes.CDLL(str(library))
+        cls.dll.run_reporting.argtypes = [ctypes.c_int, ctypes.c_int]
+        cls.dll.run_reporting.restype = None
+
+    def test_upload_and_recovery_disable_sensing_and_usb_reports(self):
+        for upload, recovery in ((1, 0), (0, 1), (1, 1)):
+            self.dll.run_reporting(upload, recovery)
+            self.assertEqual(self.dll.sensing_calls(), 1)
+            self.assertEqual(self.dll.sensing_enabled(), 0)
+            self.assertEqual(self.dll.report_count(), 0)
+            self.assertEqual(self.dll.flush_count(), 0)
+
+    def test_normal_operation_resumes_reporting(self):
+        self.dll.run_reporting(1, 0)
+        self.dll.run_reporting(0, 0)
+        self.assertEqual(self.dll.sensing_enabled(), 1)
+        self.assertEqual(self.dll.report_count(), 4)
+        self.assertEqual(self.dll.flush_count(), 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

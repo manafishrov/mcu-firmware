@@ -159,7 +159,44 @@ static void test_time_wrap_and_invalid_samples(void) {
     TEST_ASSERT_EQUAL_INT32(0, current_sensing_current_ma(0, start + 4201));
 }
 
+static void test_board_local_gap_does_not_restart_other_board_window(void) {
+    reset_sensing();
+    calibrate(91);
+    for (uint32_t now = 4250; now <= 4700; now += 50) {
+        for (uint8_t motor = 0; motor < NUM_MOTORS; ++motor) {
+            current_sensing_observe_erpm(motor, 0, now);
+            if (motor >= 4) {
+                current_sensing_observe_current(motor, 92, now);
+            }
+        }
+        current_sensing_service(commands, true, now);
+    }
+    // The first board expires between service calls, while zero RPM stays fresh.
+    for (uint32_t now = 4750; now <= 5250; now += 50) {
+        sample(now, 91, 92, 0);
+    }
+    TEST_ASSERT_GREATER_THAN_INT32(91000, current_sensing_baseline_ma(1));
+    TEST_ASSERT_EQUAL_INT32(-1, current_sensing_baseline_ma(0));
+}
+
+static void test_rpm_gap_between_service_calls_restarts_settle(void) {
+    reset_sensing();
+    calibrate(91);
+    for (uint32_t now = 4250; now < 6000; now += 50) {
+        for (uint8_t motor = 0; motor < NUM_MOTORS; ++motor) {
+            current_sensing_observe_current(motor, 91, now);
+        }
+    }
+    for (uint32_t now = 6000; now <= 6500; now += 50) {
+        sample(now, 92, 92, 0);
+    }
+    TEST_ASSERT_EQUAL_INT32(91000, current_sensing_baseline_ma(0));
+    TEST_ASSERT_EQUAL_INT32(91000, current_sensing_baseline_ma(1));
+}
+
 void test_current_sensing(void) {
+    RUN_TEST(test_board_local_gap_does_not_restart_other_board_window);
+    RUN_TEST(test_rpm_gap_between_service_calls_restarts_settle);
     RUN_TEST(test_board_mean_preserves_fraction_and_clamps_each_board);
     RUN_TEST(test_time_wrap_and_invalid_samples);
     RUN_TEST(test_motion_between_service_calls_restarts_settle);

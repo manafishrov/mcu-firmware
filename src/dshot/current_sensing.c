@@ -74,7 +74,6 @@ void current_sensing_observe_current(uint8_t motor, uint32_t amperes, uint32_t n
         if (!previous_fresh) {
             board->baseline_ma = CURRENT_UNAVAILABLE_MA;
             reset_window(board);
-            idle = false;
         }
     }
     raw[motor] = (sample_t){.value = amperes, .time_ms = now_ms, .valid = true};
@@ -84,8 +83,9 @@ void current_sensing_observe_current(uint8_t motor, uint32_t amperes, uint32_t n
 
 void current_sensing_observe_erpm(uint8_t motor, uint32_t erpm, uint32_t now_ms) {
     if (motor < NUM_MOTORS) {
+        bool continuous = fresh(&rpm[motor], now_ms);
         rpm[motor] = (sample_t){.value = erpm, .time_ms = now_ms, .valid = true};
-        if (erpm != 0) {
+        if (erpm != 0 || !continuous) {
             idle = false;
             for (int board = 0; board < CURRENT_BOARD_COUNT; ++board) {
                 reset_window(&boards[board]);

@@ -25,7 +25,9 @@ The AM32 fixed 1820 mV / negative-slope correction must not also be installed.
   Losing all current reports for a board invalidates its baseline. Returning
   samples cannot silently revive it; another stopped calibration is required.
 - Startup, DShot reinitialization, protocol teardown, and disabled service clear
-  calibration. PWM and ESC recovery cannot calibrate or provide valid current.
+  calibration. PWM, ESC upload staging, and recovery cannot calibrate or provide
+  valid current. A current-data gap is board-local; lost zero-eRPM continuity
+  restarts the shared stopped interval.
 
 ## USB telemetry
 
@@ -38,7 +40,7 @@ Two new packet types use the existing signed int32 payload and framing:
 | 9 | Current above idle, per board | 0 and 4 | mA; -1 unavailable |
 | 10 | Idle baseline, per board | 0 and 4 | mA; -1 unavailable |
 
-Both are emitted every 100 ms, except during ESC recovery. Milliamps preserve
+Both are emitted every 100 ms, except during ESC upload staging or recovery. Milliamps preserve
 averages; they do not add resolution to the original whole-amp EDT measurements.
 The Pi must require both fresh corrected board reports and must not fall back
 to raw current. Missing calibration or telemetry is not measured zero.
