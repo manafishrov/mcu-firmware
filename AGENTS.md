@@ -19,7 +19,8 @@ ROV. Single binary supports two runtime-selectable ESC protocols: DShot
 - `src/` — firmware sources (`main.c`, `usb_comm.*`, `runtime_config.*`,
   `log.*`, `dshot/`, `pwm/`)
 - `tests/` — Unity tests (`test_*.c`), `mocks/`, `stubs/`, `support/`,
-  `unity/`
+  `unity/`, and `test_startup_commands.py` (compiles the real startup function
+  with recording C stubs)
 - `CMakeLists.txt`, `pico_sdk_import.cmake` — build setup
 - `Makefile` — wraps CMake for the common targets
 - `flake.nix` — toolchain (Pico SDK, ARM GCC, Clang, CMake)
@@ -40,7 +41,7 @@ Use the dev shell (`direnv allow` in repo, or `nix develop`). Then:
 ```sh
 make format-check
 make lint-check          # clang-tidy with -Werror
-make test                # unity host tests
+make test                # Unity host tests and Python/C startup regression
 ```
 
 Auto-fix: `make format`, `make lint`.
