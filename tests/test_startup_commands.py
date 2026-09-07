@@ -40,6 +40,7 @@ class StartupCommandsTests(unittest.TestCase):
 #include <stdbool.h>
 #include <stdint.h>
 #include "dshot/control.h"
+#include "dshot/current_sensing.h"
 #include "dshot/telemetry_usb.h"
 '''+constants+r'''
 static struct dshot_controller dshot_controller0, dshot_controller1;
@@ -127,7 +128,8 @@ int telemetry_enable_command(void) { return DSHOT_EXTENDED_TELEMETRY_ENABLE; }
             shlex.split(os.environ.get("CC", "cc"))
             + ["-std=c11", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
                "-I", str(ROOT / "tests/mocks"), "-I", str(ROOT / "src"),
-               str(source), "-o", str(library)], check=True
+               str(source), str(ROOT / "src/dshot/current_sensing.c"),
+               "-o", str(library)], check=True
         )
         cls.dll = ctypes.CDLL(str(library))
         cls.dll.run_startup.argtypes = [ctypes.c_uint16]

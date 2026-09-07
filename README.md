@@ -22,12 +22,25 @@ Install the AM32 image that enforces the required input settings on all eight
 ESC controllers **before** installing this Pico image. The older Pico can
 perform that ESC update. A simultaneous Pi bundle update does not enforce the
 order: Pi firmware may auto-update the Pico before the operator flashes ESCs.
-Stage the rollout accordingly. No USB format or app topology-setting change is
-required.
+Stage the rollout accordingly. The input-policy change itself needs no USB
+format or app topology-setting change; current reporting below does.
 
 These changes remove a demonstrated saved-settings failure path; they do not
 prove that PWM detection/arming works on every installed ESC. Validate PWM
 and DShot transitions on hardware before relying on the change.
+
+## Current reporting
+
+The MCU learns separate idle baselines for two four-in-one boards from fresh,
+stable current readings after all eight motors report zero eRPM at neutral.
+It reports current above idle as `max(0, baseline - raw_board_mean)`, freezes
+baselines during motion, and preserves raw telemetry. Missing calibration is
+unavailable, not zero. This estimates incremental current; it is not protection
+or a validated absolute battery-current measurement.
+
+See [current reporting](doc/current-reporting.md) for calibration conditions,
+new USB packet types, fixed sensor topology, limitations, and staged app/Pi/ESC
+installation requirements.
 
 ## Prerequisites
 
