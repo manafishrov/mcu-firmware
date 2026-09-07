@@ -64,6 +64,7 @@ test:
 		$(TEST_SRC) $(TEST_STUB_SRC) $(TEST_UNITY_SRC) $(TEST_APP_SRC) \
 		-o $(TEST_BUILD_DIR)/run_tests
 	./$(TEST_BUILD_DIR)/run_tests
+	python3 $(TEST_DIR)/test_startup_commands.py
 
 help:
 	@echo "Available targets:"

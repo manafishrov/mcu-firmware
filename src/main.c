@@ -71,7 +71,6 @@ static absolute_time_t next_esc_version_discovery_time;
 static mcu_runtime_config_t current_config = {0};
 static mcu_runtime_config_t pending_config = {0};
 static uint8_t pending_config_request_id = 0;
-static bool pending_config_entering_dshot = false;
 
 typedef enum {
     RUNTIME_CONFIG_TRANSITION_NONE = 0,
@@ -152,7 +151,7 @@ static void init_pwm_protocol(void) {
     pwm_initialized = true;
 }
 
-static void init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
+static void init_dshot_protocol(uint16_t dshot_speed) {
     dshot_controller_reset_calibration();
     dshot_telemetry_usb_init();
     dshot_controller_init(&dshot_controller0, dshot_speed, DSHOT_PIO, DSHOT_SM_0, MOTOR0_PIN_BASE,
@@ -170,11 +169,8 @@ static void init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
     }
     dshot_send_commands(command_values, &dshot_controller0, &dshot_controller1);
     dshot_run_frame_cycles(&dshot_controller0, &dshot_controller1, NUM_MOTORS * 4);
-    dshot_send_command_to_all(&dshot_controller0, &dshot_controller1, DSHOT_CMD_3D_MODE_ON, 10);
-    if (persist_3d_mode) {
-        dshot_send_command_to_all(&dshot_controller0, &dshot_controller1, DSHOT_CMD_SAVE_SETTINGS,
-                                  10);
-    }
+    // AM60 firmware owns persistent input settings. EDT is a volatile session
+    // handshake and must still be enabled after ESC resets.
     dshot_send_command_to_all(&dshot_controller0, &dshot_controller1,
                               DSHOT_EXTENDED_TELEMETRY_ENABLE, 10);
     dshot_initialized = true;
@@ -184,9 +180,9 @@ static void init_dshot_protocol(uint16_t dshot_speed, bool persist_3d_mode) {
     dshot_telemetry_warning_pending = true;
 }
 
-static void init_current_protocol(bool persist_3d_mode) {
+static void init_current_protocol(void) {
     if (current_config.protocol == THRUSTER_PROTOCOL_DSHOT) {
-        init_dshot_protocol(current_config.dshot_speed, persist_3d_mode);
+        init_dshot_protocol(current_config.dshot_speed);
     } else {
         init_pwm_protocol();
     }
@@ -286,7 +282,7 @@ static void finish_runtime_config_apply(void) {
 
 static void initialize_pending_runtime_config(void) {
     current_config = pending_config;
-    init_current_protocol(pending_config_entering_dshot);
+    init_current_protocol();
     if (current_config.protocol == THRUSTER_PROTOCOL_PWM) {
         runtime_config_transition = RUNTIME_CONFIG_TRANSITION_PWM_SETTLE;
         runtime_config_transition_deadline =
@@ -339,9 +335,6 @@ static void begin_runtime_config_apply(mcu_runtime_config_t config, uint8_t requ
     mcu_runtime_config_validate(&config);
 
     bool switching = runtime_config_received && (dshot_initialized || pwm_initialized);
-    bool entering_dshot =
-        config.protocol == THRUSTER_PROTOCOL_DSHOT &&
-        (!runtime_config_received || current_config.protocol != THRUSTER_PROTOCOL_DSHOT);
     if (switching) {
         hold_neutral_before_switch();
     }
@@ -351,7 +344,6 @@ static void begin_runtime_config_apply(mcu_runtime_config_t config, uint8_t requ
     esc_version_discovery_active = false;
     pending_config = config;
     pending_config_request_id = request_id;
-    pending_config_entering_dshot = entering_dshot;
     mcu_runtime_config_send_status(request_id, MCU_RUNTIME_CONFIG_STATE_APPLYING,
                                    MCU_RUNTIME_CONFIG_ERROR_NONE, &pending_config);
 
@@ -537,7 +529,7 @@ static void prepare_for_esc_firmware_flash(bool was_recovery) {
 static void finish_successful_esc_firmware_flash(void) {
     esc_firmware_recovery_mode = false;
     if (runtime_config_received) {
-        init_current_protocol(false);
+        init_current_protocol();
         protocol_initialized = true;
     }
     esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_COMPLETE, UINT8_MAX,
@@ -553,7 +545,7 @@ static void finish_failed_esc_firmware_flash(bool was_recovery, bool modified, u
     bool recovery_required = was_recovery || modified;
     esc_firmware_recovery_mode = recovery_required;
     if (!recovery_required && runtime_config_received) {
-        init_current_protocol(false);
+        init_current_protocol();
         protocol_initialized = true;
     }
     esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, failed_motor, error,

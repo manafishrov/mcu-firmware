@@ -6,6 +6,29 @@ control thrusters. It supports two runtime-selectable control protocols:
 - DShot (digital ESC control)
 - PWM (analog ESC control)
 
+## ESC input configuration
+
+The Manafish AM60 V2 ESC firmware owns persistent input settings. This Pico
+firmware no longer sends automatic 3D-mode or Save Settings commands on startup,
+protocol changes, or recovery after an ESC update. Other ESC firmware must be
+configured for compatible bidirectional operation before use.
+
+Extended DShot Telemetry enable and idle retries remain: they are volatile
+session handshakes, not EEPROM writes. Neutral output, protocol-switch quiet
+intervals, version discovery, and failed-update recovery restrictions are
+unchanged.
+
+Install the AM32 image that enforces the required input settings on all eight
+ESC controllers **before** installing this Pico image. The older Pico can
+perform that ESC update. A simultaneous Pi bundle update does not enforce the
+order: Pi firmware may auto-update the Pico before the operator flashes ESCs.
+Stage the rollout accordingly. No USB format or app topology-setting change is
+required.
+
+These changes remove a demonstrated saved-settings failure path; they do not
+prove that PWM detection/arming works on every installed ESC. Validate PWM
+and DShot transitions on hardware before relying on the change.
+
 ## Prerequisites
 
 - Raspberry Pi Pico SDK (automatically fetched by CMake)
@@ -43,6 +66,7 @@ Key targets include:
 - `make format-check` – Verify formatting (useful for CI)
 - `make lint` – Lint and auto-fix C code
 - `make lint-check` – Check C code lint
+- `make test` – Run Unity tests and the Python/C startup-command regression
 
 ### Build Output
 
