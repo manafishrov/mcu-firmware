@@ -1,8 +1,10 @@
 #include "telemetry_usb.h"
 #include "../usb_comm.h"
+#include "current_sensing.h"
 #include "dshot.h"
 #include "motors.h"
 #include <hardware/sync.h>
+#include <pico/time.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -211,6 +213,7 @@ void dshot_telemetry_callback(void *context, int channel, enum dshot_telemetry_t
 
     switch (type) {
     case DSHOT_TELEMETRY_TYPE_ERPM:
+        current_sensing_observe_erpm(global_motor_id, value, to_ms_since_boot(get_absolute_time()));
         dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_ERPM, (int32_t)value);
         break;
     case DSHOT_TELEMETRY_TYPE_VOLTAGE: {
@@ -222,6 +225,8 @@ void dshot_telemetry_callback(void *context, int channel, enum dshot_telemetry_t
         break;
     }
     case DSHOT_TELEMETRY_TYPE_CURRENT: {
+        current_sensing_observe_current(global_motor_id, value,
+                                        to_ms_since_boot(get_absolute_time()));
         dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_CURRENT, (int32_t)value);
         break;
     }

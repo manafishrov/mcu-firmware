@@ -26,6 +26,7 @@ add_executable(${FIRMWARE_EXE_NAME}
     src/pwm/control.c
     src/dshot/dshot.c
     src/dshot/control.c
+    src/dshot/current_sensing.c
     src/dshot/telemetry_usb.c
 )
 

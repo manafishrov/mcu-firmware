@@ -1,5 +1,6 @@
 #include "am32/bootloader.h"
 #include "dshot/control.h"
+#include "dshot/current_sensing.h"
 #include "dshot/dshot.h"
 #include "dshot/telemetry_usb.h"
 #include "esc_firmware/update.h"
@@ -16,6 +17,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+_Static_assert(CURRENT_NEUTRAL_COMMAND == CMD_THROTTLE_NEUTRAL,
+               "Current calibration must use the USB neutral command");
 
 #define DSHOT_PIO pio0
 #define DSHOT_SM_0 0
@@ -129,6 +133,7 @@ static bool all_commands_neutral(void) {
 }
 
 static void deinit_protocol(thruster_protocol_t protocol) {
+    current_sensing_reset();
     if (protocol == THRUSTER_PROTOCOL_DSHOT && dshot_initialized) {
         dshot_telemetry_usb_flush();
         dshot_controller_deinit(&dshot_controller0);
@@ -152,6 +157,7 @@ static void init_pwm_protocol(void) {
 }
 
 static void init_dshot_protocol(uint16_t dshot_speed) {
+    current_sensing_reset();
     dshot_controller_reset_calibration();
     dshot_telemetry_usb_init();
     dshot_controller_init(&dshot_controller0, dshot_speed, DSHOT_PIO, DSHOT_SM_0, MOTOR0_PIN_BASE,
@@ -662,6 +668,31 @@ static void service_pwm_protocol(void) {
     }
 }
 
+static void service_current_reporting(void) {
+    static uint32_t last_report_ms;
+    static bool reported;
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    bool upload_active = esc_firmware_update_receiving();
+    bool enabled = runtime_config_received && protocol_initialized &&
+                   current_config.protocol == THRUSTER_PROTOCOL_DSHOT &&
+                   !esc_firmware_recovery_mode && !upload_active;
+    current_sensing_service(command_values, enabled, now_ms);
+    if (esc_firmware_recovery_mode || upload_active ||
+        (reported && now_ms - last_report_ms < 100u)) {
+        return;
+    }
+    reported = true;
+    last_report_ms = now_ms;
+    for (uint8_t board = 0; board < CURRENT_BOARD_COUNT; ++board) {
+        uint8_t motor = board * NUM_MOTORS_0;
+        dshot_telemetry_usb_send(motor, TELEMETRY_TYPE_CALIBRATED_BOARD_CURRENT,
+                                 current_sensing_current_ma(board, now_ms));
+        dshot_telemetry_usb_send(motor, TELEMETRY_TYPE_CURRENT_BASELINE,
+                                 current_sensing_baseline_ma(board));
+    }
+    dshot_telemetry_usb_flush();
+}
+
 int main(void) {
     stdio_init_all();
     log_init();
@@ -701,6 +732,7 @@ int main(void) {
                           &comm_timed_out);
 
         service_runtime_config_transition();
+        service_current_reporting();
 
         if (!runtime_config_received || !protocol_initialized) {
             continue;
