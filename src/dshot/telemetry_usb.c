@@ -16,6 +16,10 @@
 #define TELEMETRY_BATCH_HEADER_SIZE 2
 #define TELEMETRY_BATCH_FOOTER_SIZE 1
 #define ESC_VERSION_SIGNATURE 0xA5u
+// The AM60 4-in-1 boards report current 4x higher than actual: a multimeter
+// measured 5A on the bench against a reported 20A. Scale the raw EDT reading
+// down before it is used or forwarded.
+#define AM60_CURRENT_SENSOR_SCALE_DIVISOR 4u
 
 typedef struct {
     uint8_t motor_id;
@@ -225,9 +229,10 @@ void dshot_telemetry_callback(void *context, int channel, enum dshot_telemetry_t
         break;
     }
     case DSHOT_TELEMETRY_TYPE_CURRENT: {
-        current_sensing_observe_current(global_motor_id, value,
+        uint32_t amperes = value / AM60_CURRENT_SENSOR_SCALE_DIVISOR;
+        current_sensing_observe_current(global_motor_id, amperes,
                                         to_ms_since_boot(get_absolute_time()));
-        dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_CURRENT, (int32_t)value);
+        dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_CURRENT, (int32_t)amperes);
         break;
     }
     case DSHOT_TELEMETRY_TYPE_DEBUG1:
