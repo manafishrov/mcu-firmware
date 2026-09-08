@@ -5,11 +5,18 @@ ESC boards. Channels 0–3 share one sensor and channels 4–7 share another.
 Individual-sensor layouts are not supported by this estimator. Auto-zero does
 not make the sensor topology irrelevant.
 
+The AM60 raw EDT reading is 4x actual current: a bench multimeter measured 5A
+against a reported 20A. The raw value is divided by
+`AM60_CURRENT_SENSOR_SCALE_DIVISOR` (4) as soon as it is decoded, before it is
+used for baselining or forwarded over USB, so type 3 (`CURRENT`) is scaled,
+not the untouched raw EDT byte.
+
 The AM60 raw reading decreases under load. Each board reports
 `max(0, idle_baseline - mean_of_fresh_raw_readings)`. Duplicate readings from
 its four controllers are averaged, not summed. The two corrected board values
-are summed by the Pi. Raw readings are still forwarded unchanged for diagnosis.
-The AM32 fixed 1820 mV / negative-slope correction must not also be installed.
+are summed by the Pi. Raw readings are forwarded scaled but otherwise
+unprocessed for diagnosis. The AM32 fixed 1820 mV / negative-slope correction
+must not also be installed.
 
 ## Acquiring and retaining a baseline
 
