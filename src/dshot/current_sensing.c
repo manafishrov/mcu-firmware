@@ -7,6 +7,8 @@
 #define CHANNELS_PER_BOARD 4
 #define CURRENT_MIN_WINDOW_SAMPLES 10u
 #define CURRENT_MAX_WINDOW_SAMPLES 1000u
+// Reporting gain from the AM60 bench comparison; keep raw samples and tare unchanged.
+#define AM60_CURRENT_REPORTING_SCALE_DIVISOR 4
 
 _Static_assert(NUM_MOTORS == CURRENT_BOARD_COUNT * CHANNELS_PER_BOARD,
                "Current sensing requires two four-in-one ESC boards");
@@ -187,5 +189,5 @@ int32_t current_sensing_current_ma(uint8_t board, uint32_t now_ms) {
         return CURRENT_UNAVAILABLE_MA;
     }
     int32_t corrected = boards[board].baseline_ma - mean;
-    return corrected > 0 ? corrected : 0;
+    return corrected > 0 ? corrected / AM60_CURRENT_REPORTING_SCALE_DIVISOR : 0;
 }

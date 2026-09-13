@@ -5,11 +5,20 @@ ESC boards. Channels 0–3 share one sensor and channels 4–7 share another.
 Individual-sensor layouts are not supported by this estimator. Auto-zero does
 not make the sensor topology irrelevant.
 
+The reported bench comparison was 5 A measured against 20 A displayed. Apply
+`AM60_CURRENT_REPORTING_SCALE_DIVISOR` (4) to the corrected estimate in
+`current_sensing_current_ma()`, after subtracting the baseline in milliamps.
+Raw EDT values, type 3 (`CURRENT`), and type 10 (`CURRENT_BASELINE`) stay
+unchanged. Only type 9 (`CALIBRATED_BOARD_CURRENT`) receives the reporting gain.
+Integer division discards less than one milliamp, rather than truncating each
+raw observation to a multiple of four amperes before calibration.
+
 The AM60 raw reading decreases under load. Each board reports
-`max(0, idle_baseline - mean_of_fresh_raw_readings)`. Duplicate readings from
-its four controllers are averaged, not summed. The two corrected board values
-are summed by the Pi. Raw readings are still forwarded unchanged for diagnosis.
-The AM32 fixed 1820 mV / negative-slope correction must not also be installed.
+`max(0, idle_baseline_ma - mean_of_fresh_raw_readings_ma) / 4`. Duplicate readings
+from its four controllers are averaged, not summed. The two corrected board
+values are summed by the Pi without another gain correction. Raw readings are
+forwarded unchanged for diagnosis. The AM32 fixed 1820 mV / negative-slope
+correction must not also be installed.
 
 ## Acquiring and retaining a baseline
 
@@ -18,7 +27,8 @@ The AM32 fixed 1820 mV / negative-slope correction must not also be installed.
   independent proof of physical standstill.
 - Each board then needs a one-second window with at least ten fresh observations
   from every controller. Successive board samples cannot reuse observations;
-  the board-mean span must stay within 2 A. Current and eRPM freshness is 500 ms.
+  the board-mean span must stay within 2 A in raw sensor units. Current and eRPM
+  freshness is 500 ms.
 - Baselines are independent per board, remain fixed during commanded or reported
   movement, and may be updated after another stable stopped interval.
 - After calibration, remaining fresh duplicates can provide the board mean.
@@ -38,7 +48,7 @@ Two new packet types use the existing signed int32 payload and framing:
 | Type | Meaning | Channel IDs | Units |
 | --- | --- | --- | --- |
 | 9 | Current above idle, per board | 0 and 4 | mA; -1 unavailable |
-| 10 | Idle baseline, per board | 0 and 4 | mA; -1 unavailable |
+| 10 | Idle baseline, per board | 0 and 4 | raw sensor mA; -1 unavailable |
 
 Both are emitted every 100 ms, except during ESC upload staging or recovery. Milliamps preserve
 averages; they do not add resolution to the original whole-amp EDT measurements.
