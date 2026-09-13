@@ -33,8 +33,8 @@ static void test_variable_baselines_and_decreasing_load(void) {
         TEST_ASSERT_EQUAL_INT32(0, current_sensing_current_ma(0, 4200));
         commands[0] = 1200;
         sample(4250, baselines[i] - 5, baselines[i] - 5, 100);
-        TEST_ASSERT_EQUAL_INT32(10000, current_sensing_current_ma(0, 4250) +
-                                           current_sensing_current_ma(1, 4250));
+        TEST_ASSERT_EQUAL_INT32(2500, current_sensing_current_ma(0, 4250) +
+                                          current_sensing_current_ma(1, 4250));
         sample(4300, baselines[i] + 1, baselines[i], 100);
         TEST_ASSERT_EQUAL_INT32(0, current_sensing_current_ma(0, 4300));
     }
@@ -108,7 +108,7 @@ static void test_missing_duplicates_expiry_and_reset(void) {
         current_sensing_observe_current(0, 86, now);
         current_sensing_service(commands, true, now);
     }
-    TEST_ASSERT_EQUAL_INT32(5000, current_sensing_current_ma(0, 5000));
+    TEST_ASSERT_EQUAL_INT32(1250, current_sensing_current_ma(0, 5000));
     TEST_ASSERT_EQUAL_INT32(-1, current_sensing_current_ma(1, 5000));
     // A fresh packet after a telemetry gap must not revive the old baseline.
     current_sensing_observe_current(0, 86, 6000);
@@ -130,7 +130,7 @@ static void test_board_mean_preserves_fraction_and_clamps_each_board(void) {
     sample(4500, 86, 92, 100);
     current_sensing_observe_current(0, 85, 4501);
     current_sensing_service(commands, true, 4501);
-    TEST_ASSERT_EQUAL_INT32(5250, current_sensing_current_ma(0, 4501));
+    TEST_ASSERT_EQUAL_INT32(1312, current_sensing_current_ma(0, 4501));
     TEST_ASSERT_EQUAL_INT32(0, current_sensing_current_ma(1, 4501));
 }
 
@@ -194,7 +194,32 @@ static void test_rpm_gap_between_service_calls_restarts_settle(void) {
     TEST_ASSERT_EQUAL_INT32(91000, current_sensing_baseline_ma(1));
 }
 
+static void test_reporting_gain_preserves_raw_baseline_and_small_deltas(void) {
+    reset_sensing();
+    TEST_ASSERT_EQUAL_INT32(-1, current_sensing_current_ma(0, 0));
+    calibrate(91);
+    commands[0] = 1200;
+    sample(4250, 71, 90, 100);
+    TEST_ASSERT_EQUAL_INT32(91000, current_sensing_baseline_ma(0));
+    TEST_ASSERT_EQUAL_INT32(91000, current_sensing_baseline_ma(1));
+    TEST_ASSERT_EQUAL_INT32(5000, current_sensing_current_ma(0, 4250));
+    TEST_ASSERT_EQUAL_INT32(250, current_sensing_current_ma(1, 4250));
+    sample(4300, 91, 91, 100);
+    current_sensing_observe_current(0, 90, 4301);
+    TEST_ASSERT_EQUAL_INT32(62, current_sensing_current_ma(0, 4301));
+    TEST_ASSERT_EQUAL_INT32(-1, current_sensing_current_ma(0, 4900));
+
+    reset_sensing();
+    calibrate(UINT8_MAX);
+    commands[0] = 1200;
+    sample(4250, 0, 255, 100);
+    TEST_ASSERT_EQUAL_INT32(255000, current_sensing_baseline_ma(0));
+    TEST_ASSERT_EQUAL_INT32(63750, current_sensing_current_ma(0, 4250));
+    TEST_ASSERT_EQUAL_INT32(0, current_sensing_current_ma(1, 4250));
+}
+
 void test_current_sensing(void) {
+    RUN_TEST(test_reporting_gain_preserves_raw_baseline_and_small_deltas);
     RUN_TEST(test_board_local_gap_does_not_restart_other_board_window);
     RUN_TEST(test_rpm_gap_between_service_calls_restarts_settle);
     RUN_TEST(test_board_mean_preserves_fraction_and_clamps_each_board);

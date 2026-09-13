@@ -224,5 +224,71 @@ int sensing_calls(void) { return service_calls; }
         self.assertEqual(self.dll.flush_count(), 1)
 
 
+class RawCurrentTelemetryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        source_text = (ROOT / "src/dshot/telemetry_usb.c").read_text()
+        callback = source_text[source_text.index("void dshot_telemetry_callback("):]
+        defines = "\n".join(line for line in source_text.splitlines()
+                            if line.startswith("#define "))
+        harness = r'''
+#include <stdint.h>
+#include "motors.h"
+#include "dshot/telemetry_usb.h"
+#include "pico/time.h"
+static esc_version_decoder_t esc_version_decoders[NUM_MOTORS];
+static bool esc_versions_reported[NUM_MOTORS];
+static uint32_t observed;
+static uint8_t observed_motor, sent_motor, sent_type;
+static int32_t sent;
+void current_sensing_observe_current(uint8_t motor, uint32_t value, uint32_t now) {
+    (void)now; observed_motor = motor; observed = value;
+}
+void current_sensing_observe_erpm(uint8_t motor, uint32_t value, uint32_t now) {
+    (void)motor; (void)value; (void)now;
+}
+void dshot_telemetry_usb_send(uint8_t motor, uint8_t type, int32_t value) {
+    sent_motor = motor; sent_type = type; sent = value;
+}
+bool dshot_telemetry_usb_decode_esc_version(esc_version_decoder_t *decoder,
+    enum dshot_telemetry_type type, uint32_t value,
+    char version[ESC_FIRMWARE_VERSION_MAX_LENGTH + 1]) {
+    (void)decoder; (void)type; (void)value; (void)version; return false;
+}
+static void dshot_telemetry_usb_send_esc_version(uint8_t motor, const char *version) {
+    (void)motor; (void)version;
+}
+''' + defines + "\n" + callback + r'''
+int check_raw_current(void) {
+    (void)pio0; (void)pio1;
+    for (uint8_t motor = 0; motor < NUM_MOTORS; ++motor) {
+        dshot_telemetry_context_t context = {.controller_base_global_id = motor < 4 ? 0 : 4};
+        for (uint32_t value = 0; value <= UINT8_MAX; ++value) {
+            observed = UINT32_MAX; sent = -99;
+            dshot_telemetry_callback(&context, motor % 4, DSHOT_TELEMETRY_TYPE_CURRENT, value);
+            if (observed_motor != motor || observed != value) return 1;
+            if (sent_motor != motor || sent_type != TELEMETRY_TYPE_CURRENT ||
+                sent != (int32_t)value) return 2;
+        }
+    }
+    return 0;
+}
+'''
+        cls.temp = tempfile.TemporaryDirectory(prefix="pico-raw-current-")
+        cls.addClassCleanup(cls.temp.cleanup)
+        source = Path(cls.temp.name) / "raw_current.c"
+        library = source.with_suffix(".so")
+        source.write_text(harness)
+        subprocess.run(shlex.split(os.environ.get("CC", "cc")) + [
+            "-std=c11", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
+            "-I", str(ROOT / "tests/mocks"), "-I", str(ROOT / "src"),
+            str(source), "-o", str(library)
+        ], check=True)
+        cls.dll = ctypes.CDLL(str(library))
+
+    def test_callback_preserves_every_raw_byte_for_estimation_and_usb(self):
+        self.assertEqual(self.dll.check_raw_current(), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
