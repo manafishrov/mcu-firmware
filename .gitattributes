@@ -1,3 +1,8 @@
 *.cmake linguist-language=C
 CMakeLists.txt linguist-language=C
 pico_sdk_import.cmake linguist-language=C
+
+# Preserve the pinned Bosch sources byte-for-byte, including upstream CRLF.
+third_party/bmi270/bmi*.c -text whitespace=cr-at-eol
+third_party/bmi270/bmi*.h -text whitespace=cr-at-eol
+third_party/bmi270/LICENSE -text

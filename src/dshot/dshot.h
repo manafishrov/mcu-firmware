@@ -130,6 +130,7 @@ struct dshot_controller {
     uint16_t speed;  /* DShot speed in kbit/s (e.g. 600) */
     struct dshot_motor motor[DSHOT_MAX_CHANNELS];
     absolute_time_t command_last_time;
+    absolute_time_t receive_deadline;
 
     dshot_telemetry_callback_t telemetry_cb;
     void *telemetry_cb_context;

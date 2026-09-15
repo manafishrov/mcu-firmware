@@ -17,10 +17,21 @@ ROV. Single binary supports two runtime-selectable ESC protocols: DShot
 ## Structure
 
 - `src/` — firmware sources (`main.c`, `usb_comm.*`, `runtime_config.*`,
-  `log.*`, `dshot/`, `pwm/`)
+  `log.*`, `dshot/`, `pwm/`, `control/`, `imu/`). Core 1 owns SPI and pure
+  control; core 0 owns USB, motor outputs and safety arbitration.
+- `third_party/bmi270/` — pinned official Bosch driver/config image and license;
+  excluded from project formatting and lint fixes.
+- `docs/PICO_CONTROL_PROTOCOL.md` — read before changing control math, USB
+  framing/settings, cross-core ownership, or maintenance transitions.
+- `scripts/control_smoke.py` — coordinator-operated neutral-output hardware smoke
+  test; requires explicit `--execute`, stopped Pi service and disconnected ESCs.
 - `tests/` — Unity tests (`test_*.c`), `mocks/`, `stubs/`, `support/`,
   `unity/`, and `test_startup_commands.py` (compiles the real startup function
-  with recording C stubs)
+  with recording C stubs), the standalone Bosch SPI/USB buffer emulators, and
+  `test_control_runtime.py` (real runtime/transport against a fake SDK),
+  `test_control_smoke.py` (offline checks of bench evidence handling), and
+  `test_build_identity.py` (CMake release/development metadata and real USB replies;
+  requires host CMake, not the Pico SDK).
 - `CMakeLists.txt`, `pico_sdk_import.cmake` — build setup
 - `Makefile` — wraps CMake for the common targets
 - `flake.nix` — toolchain (Pico SDK, ARM GCC, Clang, CMake)
@@ -56,6 +67,8 @@ Pre-commit hook runs `clang-format` on staged files. Install once:
 - USB protocol lives in `usb_comm.*`. Changes here must be reflected in
   whatever host (firmware/app) consumes it.
 - Match existing C style; no warnings in `lint-check`.
+- In lint commands, keep GCC-internal headers after target libc and Clang headers
+  with `-idirafter`; prioritizing GCC's `stdint.h` breaks Clang constant macros.
 - Don't widen the toolchain (extra deps, alternative SDKs) without reason.
 - Don't push without being asked. CI builds both Pico and Pico 2 artifacts.
 
@@ -89,7 +102,7 @@ Conventional Commits, focused on **why**.
 
 - Types: `feat`, `fix`, `refactor`, `perf`, `docs`, `chore`, `ci`, `build`,
   `revert`. `chore(deps)` reserved for Renovate.
-- Scopes: `dshot`, `pwm`, `usb`, `config`, `log`, `tests`, `cmake`, `flake`,
+- Scopes: `control`, `imu`, `dshot`, `pwm`, `usb`, `config`, `log`, `tests`, `cmake`, `flake`,
   `ci`.
 - Subject: imperative, lowercase, ≤72 chars, no period.
 

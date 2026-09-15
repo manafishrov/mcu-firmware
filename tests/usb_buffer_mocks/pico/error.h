@@ -1,0 +1,4 @@
+#ifndef USB_BUFFER_MOCK_ERROR_H
+#define USB_BUFFER_MOCK_ERROR_H
+#define PICO_ERROR_TIMEOUT (-1)
+#endif

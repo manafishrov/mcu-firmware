@@ -1,4 +1,5 @@
 #include "am32/bootloader.h"
+#include "control/runtime.h"
 #include "dshot/control.h"
 #include "dshot/current_sensing.h"
 #include "dshot/dshot.h"
@@ -10,6 +11,8 @@
 #include "pwm/pwm.h"
 #include "runtime_config.h"
 #include "usb_comm.h"
+#include "usb_rx.h"
+#include "usb_tx.h"
 #include <hardware/pio.h>
 #include <pico/stdio.h>
 #include <pico/time.h>
@@ -238,8 +241,16 @@ static void service_esc_version_discovery(void) {
     if (absolute_time_diff_us(next_esc_version_discovery_time, now) < 0) {
         return;
     }
-    dshot_send_command_to_all(&dshot_controller0, &dshot_controller1,
-                              DSHOT_EXTENDED_TELEMETRY_ENABLE, 10);
+    /* Discovery runs during a negotiated neutral session too. Queue the same
+       volatile EDT repeats through the normal channel scheduler rather than
+       blocking USB/heartbeat service with the startup helper's sleeps. */
+    for (int motor = 0; motor < NUM_MOTORS; ++motor) {
+        struct dshot_controller *controller;
+        int channel;
+        dshot_get_motor_controller(motor, &controller, &channel, &dshot_controller0,
+                                   &dshot_controller1);
+        dshot_command(controller, (uint16_t)channel, DSHOT_EXTENDED_TELEMETRY_ENABLE, 10);
+    }
     esc_version_discovery_attempts++;
     next_esc_version_discovery_time = delayed_by_ms(now, ESC_VERSION_DISCOVERY_RETRY_MS);
 }
@@ -365,7 +376,7 @@ static void begin_runtime_config_apply(mcu_runtime_config_t config, uint8_t requ
     continue_runtime_config_apply_after_neutral();
 }
 
-static void handle_command_packet(uint8_t *command_buf) {
+static void handle_command_packet(uint8_t *command_buf, uint32_t received_us) {
     if (!runtime_config_received) {
         return;
     }
@@ -375,6 +386,13 @@ static void handle_command_packet(uint8_t *command_buf) {
         return;
     }
 
+    if ((control_runtime_extended_active() || control_runtime_maintenance_latched()) &&
+        !all_commands_neutral()) {
+        set_all_commands_neutral();
+        control_runtime_inhibit();
+        return;
+    }
+    control_runtime_legacy_input_at(command_values, received_us);
     if (!protocol_initialized) {
         set_all_commands_neutral();
         return;
@@ -401,11 +419,20 @@ static void handle_config_packet(uint8_t *config_buf) {
         return;
     }
 
+    if (request.command == MCU_CONTROL_COMMAND_GET_CONTROL_CAPABILITIES) {
+        control_runtime_capabilities(request.request_id);
+        return;
+    }
     if (request.command == MCU_CONTROL_COMMAND_GET_INFO) {
         mcu_runtime_config_send_release(request.request_id);
         return;
     }
 
+    if (control_runtime_extended_active() || control_runtime_maintenance_latched()) {
+        mcu_runtime_config_send_status(request.request_id, MCU_RUNTIME_CONFIG_STATE_REJECTED,
+                                       MCU_RUNTIME_CONFIG_ERROR_APPLY_IN_PROGRESS, &request.config);
+        return;
+    }
     if (esc_firmware_recovery_mode) {
         log_warn("Ignoring runtime config while ESC firmware recovery is required");
         mcu_runtime_config_send_status(request.request_id, MCU_RUNTIME_CONFIG_STATE_REJECTED,
@@ -586,6 +613,11 @@ static void commit_esc_firmware_update(esc_firmware_update_error_t *error) {
 }
 
 static void handle_esc_firmware_control_packet(const uint8_t *packet) {
+    if (control_runtime_extended_active()) {
+        control_runtime_inhibit();
+        return;
+    }
+    control_runtime_inhibit();
     esc_firmware_update_command_t command;
     esc_firmware_update_error_t error;
     if (!esc_firmware_update_parse_control(packet, &command, &error)) {
@@ -616,6 +648,10 @@ static void handle_esc_firmware_control_packet(const uint8_t *packet) {
 }
 
 static void handle_esc_firmware_data_packet(const uint8_t *packet) {
+    if (control_runtime_extended_active()) {
+        control_runtime_inhibit();
+        return;
+    }
     esc_firmware_update_error_t error;
     if (!esc_firmware_update_receive_data(packet, &error)) {
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_FAILED, UINT8_MAX, error,
@@ -630,6 +666,12 @@ static void handle_esc_firmware_data_packet(const uint8_t *packet) {
 }
 
 static void service_dshot_protocol(void) {
+    /* Runtime's RX/output leases are authoritative; this low-level idle timer
+       must not neutralize a fresh extended command merely because it is not 5A. */
+    if (control_runtime_output_permitted()) {
+        dshot_mark_activity(&dshot_controller0);
+        dshot_mark_activity(&dshot_controller1);
+    }
     bool esc_firmware_upload_active = esc_firmware_update_receiving();
     if (esc_firmware_upload_active) {
         set_all_commands_neutral();
@@ -637,8 +679,12 @@ static void service_dshot_protocol(void) {
     dshot_send_commands(command_values, &dshot_controller0, &dshot_controller1);
     dshot_enable_edt_if_idle(command_values, edt_enable_scheduled, edt_enable_time,
                              &dshot_controller0, &dshot_controller1);
-    dshot_loop(&dshot_controller0);
-    dshot_loop(&dshot_controller1);
+    /* Start both PIO groups before waiting, overlapping receive windows.
+       Each round services one motor per group; four rounds cover all motors. */
+    dshot_loop_async_start(&dshot_controller0);
+    dshot_loop_async_start(&dshot_controller1);
+    dshot_loop_async_complete(&dshot_controller0);
+    dshot_loop_async_complete(&dshot_controller1);
     if (esc_firmware_upload_active) {
         return;
     }
@@ -662,10 +708,64 @@ static void service_dshot_protocol(void) {
     }
 }
 
+static void report_motor_frame_rates(void) {
+    static uint32_t last_ms;
+    static uint32_t previous[8];
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (!dshot_initialized || now - last_ms < 5000u || esc_firmware_update_receiving()) {
+        return;
+    }
+    uint32_t rates[8];
+    for (unsigned i = 0; i < 8; ++i) {
+        const struct dshot_controller *controller = i < 4 ? &dshot_controller0 : &dshot_controller1;
+        uint32_t count = controller->motor[i % 4].stats.tx_frames;
+        rates[i] = count >= previous[i]
+                       ? (uint32_t)((uint64_t)(count - previous[i]) * 1000u / (now - last_ms))
+                       : 0;
+        previous[i] = count;
+    }
+    last_ms = now;
+    log_infof("DShot per-motor transmitted frames/s: %u,%u,%u,%u,%u,%u,%u,%u (not ESC acceptance)",
+              rates[0], rates[1], rates[2], rates[3], rates[4], rates[5], rates[6], rates[7]);
+}
+
 static void service_pwm_protocol(void) {
     for (int i = 0; i < NUM_MOTORS; ++i) {
         pwm_set_throttle(&pwm_controller, i, pwm_translate_throttle(command_values[i]));
     }
+}
+
+static bool control_request_protocol(uint16_t protocol, uint16_t speed) {
+    if (esc_firmware_recovery_mode || esc_firmware_update_receiving() ||
+        runtime_config_transition != RUNTIME_CONFIG_TRANSITION_NONE) {
+        return false;
+    }
+    set_all_commands_neutral();
+    mcu_runtime_config_t config = {.protocol = (thruster_protocol_t)protocol, .dshot_speed = speed};
+    if (runtime_config_received && protocol_initialized &&
+        current_config.protocol == config.protocol &&
+        current_config.dshot_speed == config.dshot_speed) {
+        hold_neutral_before_switch();
+        return true;
+    }
+    begin_runtime_config_apply(config, 0);
+    return true;
+}
+static bool control_protocol_ready(uint16_t protocol, uint16_t speed) {
+    return protocol_initialized && runtime_config_received &&
+           (uint16_t)current_config.protocol == protocol && current_config.dshot_speed == speed;
+}
+static bool control_maintenance_active(void) {
+    return esc_firmware_update_receiving();
+}
+static bool control_recovery_required(void) {
+    return esc_firmware_recovery_mode;
+}
+static bool control_outputs_initialized(void) {
+    return protocol_initialized;
+}
+static uint16_t control_output_protocol(void) {
+    return (uint16_t)current_config.protocol;
 }
 
 static void service_current_reporting(void) {
@@ -695,17 +795,30 @@ static void service_current_reporting(void) {
 
 int main(void) {
     stdio_init_all();
+    usb_rx_init();
     log_init();
+    const control_runtime_hooks_t control_hooks = {
+        .request_protocol = control_request_protocol,
+        .protocol_ready = control_protocol_ready,
+        .maintenance_active = control_maintenance_active,
+        .recovery_required = control_recovery_required,
+        .outputs_initialized = control_outputs_initialized,
+        .output_protocol = control_output_protocol,
+    };
+    control_runtime_init(&control_hooks);
 
     set_all_commands_neutral();
     last_comm_time = get_absolute_time();
     log_info("Waiting for runtime config from main firmware");
 
+    static uint8_t control_buf[USB_CONTROL_MAX_PACKET_SIZE];
     static uint8_t command_buf[INPUT_PACKET_SIZE];
     static uint8_t config_buf[USB_CONFIG_PACKET_SIZE];
     static uint8_t esc_firmware_control_buf[ESC_FIRMWARE_USB_CONTROL_PACKET_SIZE];
     static uint8_t esc_firmware_data_buf[ESC_FIRMWARE_USB_DATA_PACKET_SIZE];
     usb_packet_reader_t readers[] = {
+        {USB_CONTROL_START_BYTE, control_buf, USB_CONTROL_MAX_PACKET_SIZE, 0, USB_PACKET_CONTROL,
+         0},
         {USB_INPUT_START_BYTE, command_buf, INPUT_PACKET_SIZE, 0, USB_PACKET_COMMAND, 0},
         {USB_CONFIG_START_BYTE, config_buf, USB_CONFIG_PACKET_SIZE, 0, USB_PACKET_CONFIG, 0},
         {ESC_FIRMWARE_USB_CONTROL_START_BYTE, esc_firmware_control_buf,
@@ -716,10 +829,17 @@ int main(void) {
     esc_firmware_update_reset();
 
     while (true) {
+        control_runtime_check_stall();
         usb_packet_kind_t packet_kind = usb_poll(readers, sizeof(readers) / sizeof(readers[0]));
 
-        if (packet_kind == USB_PACKET_COMMAND) {
-            handle_command_packet(command_buf);
+        if (packet_kind == USB_PACKET_CONTROL) {
+            control_runtime_receive_at(control_buf, readers[0].packet_size,
+                                       (uint32_t)to_us_since_boot(readers[0].last_byte_time));
+        } else if (packet_kind == USB_PACKET_INVALID) {
+            control_runtime_inhibit();
+        } else if (packet_kind == USB_PACKET_COMMAND) {
+            handle_command_packet(command_buf,
+                                  (uint32_t)to_us_since_boot(readers[1].last_byte_time));
         } else if (packet_kind == USB_PACKET_CONFIG) {
             handle_config_packet(config_buf);
         } else if (packet_kind == USB_PACKET_ESC_FIRMWARE_CONTROL) {
@@ -732,6 +852,8 @@ int main(void) {
                           &comm_timed_out);
 
         service_runtime_config_transition();
+        control_runtime_service();
+        control_runtime_get_motors(command_values);
         service_current_reporting();
 
         if (!runtime_config_received || !protocol_initialized) {
@@ -747,5 +869,8 @@ int main(void) {
         } else {
             service_pwm_protocol();
         }
+        control_runtime_output_serviced();
+        report_motor_frame_rates();
+        usb_tx_service();
     }
 }

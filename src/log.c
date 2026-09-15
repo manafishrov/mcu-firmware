@@ -1,4 +1,5 @@
 #include "log.h"
+#include "usb_tx.h"
 #include <pico/time.h>
 #include <pico/types.h>
 #include <stdarg.h>
@@ -51,10 +52,11 @@ static void send_log(enum log_level level, const char *message) {
         checksum ^= (uint8_t)message[i];
     }
 
-    fwrite(header, 1, 3, stdout);
-    fwrite(message, 1, msg_len, stdout);
-    fwrite(&checksum, 1, 1, stdout);
-    fflush(stdout);
+    uint8_t packet[LOG_MAX_MESSAGE_SIZE + 4];
+    memcpy(packet, header, sizeof(header));
+    memcpy(packet + sizeof(header), message, msg_len);
+    packet[msg_len + sizeof(header)] = checksum;
+    (void)usb_tx_packet(packet, msg_len + 4, false);
 }
 
 static void send_logf(enum log_level level, const char *format, va_list args) {

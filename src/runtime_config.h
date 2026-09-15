@@ -18,6 +18,7 @@ typedef struct {
 typedef enum {
     MCU_CONTROL_COMMAND_APPLY_CONFIG = 1,
     MCU_CONTROL_COMMAND_GET_INFO = 2,
+    MCU_CONTROL_COMMAND_GET_CONTROL_CAPABILITIES = 3,
 } mcu_control_command_t;
 
 typedef struct {
