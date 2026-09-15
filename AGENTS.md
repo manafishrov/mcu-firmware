@@ -28,8 +28,10 @@ ROV. Single binary supports two runtime-selectable ESC protocols: DShot
 - `tests/` — Unity tests (`test_*.c`), `mocks/`, `stubs/`, `support/`,
   `unity/`, and `test_startup_commands.py` (compiles the real startup function
   with recording C stubs), the standalone Bosch SPI/USB buffer emulators, and
-  `test_control_runtime.py` (real runtime/transport against a fake SDK), and
-  `test_control_smoke.py` (offline checks of bench evidence handling).
+  `test_control_runtime.py` (real runtime/transport against a fake SDK),
+  `test_control_smoke.py` (offline checks of bench evidence handling), and
+  `test_build_identity.py` (CMake release/development metadata and real USB replies;
+  requires host CMake, not the Pico SDK).
 - `CMakeLists.txt`, `pico_sdk_import.cmake` — build setup
 - `Makefile` — wraps CMake for the common targets
 - `flake.nix` — toolchain (Pico SDK, ARM GCC, Clang, CMake)

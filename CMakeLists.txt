@@ -20,6 +20,11 @@ execute_process(COMMAND git status --porcelain
 if(CONTROL_GIT_DIRTY)
     string(APPEND CONTROL_GIT_ID "-dirty")
 endif()
+if(MANAFISH_RELEASE_VERSION)
+    set(CONTROL_BUILD_IDENTITY "${MANAFISH_RELEASE_VERSION}")
+else()
+    set(CONTROL_BUILD_IDENTITY "pico-control-dev:${CONTROL_GIT_ID}")
+endif()
 
 configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/src/release_version.h.in
@@ -63,7 +68,7 @@ target_include_directories(${FIRMWARE_EXE_NAME} SYSTEM PRIVATE
 target_compile_definitions(
     ${FIRMWARE_EXE_NAME}
     PRIVATE
-        CONTROL_BUILD_IDENTITY="pico-control-dev:${CONTROL_GIT_ID}"
+        CONTROL_BUILD_IDENTITY="${CONTROL_BUILD_IDENTITY}"
         PICO_STACK_SIZE=0x4000
         PICO_CORE1_STACK_SIZE=0x800
         CFG_TUD_CDC_RX_BUFSIZE=2048
