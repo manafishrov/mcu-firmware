@@ -89,8 +89,12 @@ No production file is included in or modified by the diagnostic build.
 
 ## Reading the report
 
-The USB product is `Manafish BMI270 read-only SPI probe`; binary program name is
-`manafish-bmi270-read-only-spi-probe`. A `SPI_PROBE` header includes the exact
+The USB product is `Manafish BMI270 read-only SPI probe`, configured through
+SDK 2.1.1's `USBD_PRODUCT` with a 36-word descriptor buffer for all 35 characters
+and the header. Binary program name is `manafish-bmi270-read-only-spi-probe`.
+Earlier diagnostic builds using `PICO_STDIO_USB_PRODUCT_STR` instead advertised
+SDK's default `Pico`; changing that unused macro did not rename the USB device.
+A `SPI_PROBE` header includes the exact
 `probe.c` source hash and record count. With pulls enabled, a full run has
 66 records (54 without). `END_SPI_PROBE` marks completion of the report.
 Missing that marker means an incomplete capture, even if the pins were idled.
