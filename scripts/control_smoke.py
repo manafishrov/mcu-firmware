@@ -6,12 +6,15 @@ nonneutral raw motor commands. The default temporary configuration has ZERO
 allocation, ZERO power, and no nullspace vectors. Opt-in nullspace stress adds
 eight dense vectors and CAN produce nonneutral calculated outputs; it requires
 --escs-disconnected. Settings are RAM-only and replaced by the Pi's full
-configuration at its next negotiated session.
+configuration at its next negotiated session. --backpressure pauses host reads
+for four seconds while sending fresh commands and retains the enclosing device
+statistics window; it requires an increased device USB-drop count as evidence.
 """
 
 import argparse
 import json
 import math
+import re
 import secrets
 import struct
 import time
@@ -70,6 +73,7 @@ class Link:
         self.counts = Counter()
         self.last_attitude = None
         self.stats = []
+        self.usb_drops = None
 
     def pump(self):
         self.buffer.extend(self.port.read(max(1, self.port.in_waiting)))
@@ -109,8 +113,18 @@ class Link:
                     return
                 packet = bytes(self.buffer[:size])
                 del self.buffer[:size]
+                checksum = 0
+                for byte in packet:
+                    checksum ^= byte
+                if checksum:
+                    self.counts["bad_legacy_checksum"] += 1
+                    continue
                 if kind == 0xB5:
-                    print("MCU", packet[3:-1].decode("utf-8", errors="replace"), flush=True)
+                    message = packet[3:-1].decode("utf-8", errors="replace")
+                    drops = re.search(r"USB_drops=(\d+)", message)
+                    if drops is not None:
+                        self.usb_drops = int(drops.group(1))
+                    print("MCU", message, flush=True)
             else:
                 del self.buffer[0]
         while len(self.messages) > 256:
@@ -147,7 +161,8 @@ class Link:
         elif kind == 0x91:
             values = struct.unpack("<Q10I", payload)
             elapsed = values[0] / 1_000_000
-            report = {"elapsed_s": elapsed, "ahrs_hz": values[1] / elapsed,
+            report = {"received_host_monotonic_s": time.monotonic(),
+                      "elapsed_s": elapsed, "ahrs_hz": values[1] / elapsed,
                       "pid_hz": values[2] / elapsed, "depth_hz": values[3] / elapsed,
                       "misses": values[4], "avg_us": values[5], "max_us": values[6],
                       "sensor_errors": values[7], "queue_overflows": values[8],
@@ -190,6 +205,59 @@ class Link:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             self.pump()
+
+
+def stream_window(link, seconds, read=True, stop=None):
+    """Keep real commands fresh, optionally without draining any host serial input."""
+    next_control = next_pressure = time.monotonic()
+    deadline = next_control + seconds
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now >= next_pressure:
+            link.send(0x11, struct.pack("<ffI", 0.2, 0, 1))
+            next_pressure += 1 / 15
+        if now >= next_control:
+            direction = [0, 0, 0, 0, 0.03, 0, 0, 0]
+            link.send(0x10, struct.pack("<9fI", *direction, 1 / 60, 7))
+            next_control += 1 / 60
+        if read:
+            link.pump()
+        else:
+            time.sleep(0.001)
+        if stop is not None and stop():
+            return
+
+
+def test_backpressure(link):
+    """Retain a complete five-second device window containing four seconds blocked."""
+    previous = len(link.stats)
+    stream_window(link, 7, stop=lambda: len(link.stats) > previous and link.usb_drops is not None)
+    if len(link.stats) == previous or link.usb_drops is None:
+        raise RuntimeError("Cannot align backpressure to measured device statistics")
+    boundary = len(link.stats)
+    before = link.usb_drops
+    started = time.monotonic()
+    print("BACKPRESSURE_BEGIN", json.dumps({"host_monotonic_s": started,
+                                           "usb_drops_before": before}), flush=True)
+    # A synchronous pyserial port has no userspace background reader. Kernel and
+    # device buffers must actually fill; an increased device drop count proves it.
+    stream_window(link, 4, read=False)
+    blocked_seconds = time.monotonic() - started
+    stream_window(link, 7, stop=lambda: len(link.stats) > boundary and link.usb_drops > before)
+    if len(link.stats) <= boundary or link.usb_drops <= before:
+        raise RuntimeError("No retained device timing window or no proven USB backpressure")
+    measured = link.stats[boundary]
+    if measured["received_host_monotonic_s"] - started > 6:
+        raise RuntimeError("Blocked statistics window was lost; cannot claim its timing")
+    if not (495 <= measured["ahrs_hz"] <= 505 and 495 <= measured["pid_hz"] <= 505):
+        raise RuntimeError(f"500 Hz control failed under USB backpressure: {measured}")
+    if measured["misses"] or measured["queue_overflows"] or measured["max_us"] >= 2000:
+        raise RuntimeError(f"Control deadline or queue failed under backpressure: {measured}")
+    result = {"blocked_host_read_seconds": blocked_seconds,
+              "usb_drops_before": before, "usb_drops_after": link.usb_drops,
+              "device_window": measured}
+    print("BACKPRESSURE_RESULT", json.dumps(result), flush=True)
+    return result
 
 
 def run(args):
@@ -240,6 +308,7 @@ def run(args):
                 link.send(0x10, struct.pack("<9fI", *direction, 1 / 60, 7))
                 next_control += 1 / 60
             link.pump()
+        backpressure = test_backpressure(link) if args.backpressure else None
         # Prove host expiry even though sample/telemetry continue.
         link.drain(0.35)
         if not link.last_attitude or link.last_attitude["health"] & 4:
@@ -249,7 +318,7 @@ def run(args):
         if not link.stats:
             raise RuntimeError("No measured execution statistics received")
         print("RESULT", json.dumps({"frames": link.counts, "last": link.last_attitude,
-                                    "stats": link.stats}), flush=True)
+                                    "stats": link.stats, "backpressure": backpressure}), flush=True)
         link.send(0x14, struct.pack("<8H", *([1000] * 8)))
         link.drain(0.1)
         link.send(0x25, reliable=True)
@@ -261,6 +330,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", default="/dev/ttyACM0")
     parser.add_argument("--seconds", type=float, default=12)
     parser.add_argument("--execute", action="store_true", help="acknowledge coordinator-only serial I/O")
+    parser.add_argument("--backpressure", action="store_true", help="prove control timing while host serial reads are paused for four seconds")
     parser.add_argument("--stress-nullspace", action="store_true", help="exercise eight dense nullspace vectors; computed outputs may be nonneutral")
     parser.add_argument("--escs-disconnected", action="store_true", help="explicit acknowledgement required for nullspace stress")
     options = parser.parse_args()

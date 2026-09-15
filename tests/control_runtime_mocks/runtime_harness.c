@@ -11,11 +11,13 @@
 
 static uint64_t clock_us = 1000000;
 static bool mock_ready = true, mock_recovery, mock_maintenance, mock_initialized = true;
-static bool mock_request_ok = true, connected = true;
+static bool mock_request_ok = true, connected = true, sensor_fresh = true;
 static uint16_t mock_protocol = 1;
 static unsigned protocol_requests, command_calls, step_calls, sensor_inits, watchdog_calls;
 static unsigned gpio_low_calls, gpio_normal_calls, pwm_neutral_calls;
-static uint32_t writable = 64;
+static uint32_t writable = 64, protocol_wait_us;
+static bool check_commit_ack_ready;
+static unsigned ready_commit_acks;
 static uint8_t sent[262144], incoming[8192];
 static size_t sent_length, incoming_read, incoming_length;
 static void (*rx_callback)(void *);
@@ -123,6 +125,15 @@ uint32_t tud_cdc_write_available(void) {
 }
 uint32_t tud_cdc_write(const void *buffer, uint32_t size) {
     assert(size <= 64 && size <= writable && sent_length + size <= sizeof(sent));
+    const uint8_t *bytes = buffer;
+    if (check_commit_ack_ready && size == CONTROL_FRAME_OVERHEAD + 12 &&
+        bytes[0] == CONTROL_FRAME_START && bytes[2] == FRAME_ACK &&
+        bytes[CONTROL_FRAME_HEADER_SIZE] == MSG_COMMIT &&
+        bytes[CONTROL_FRAME_HEADER_SIZE + 1] == RESULT_APPLIED) {
+        /* The host may act as soon as these bytes leave, before service returns. */
+        assert(!load_shared(&maintenance) && !pending_commit);
+        ready_commit_acks++;
+    }
     memcpy(sent + sent_length, buffer, size);
     sent_length += size;
     return size;
@@ -135,6 +146,9 @@ bool bmi270_sensor_init(void) {
     return true;
 }
 bool bmi270_sensor_read(float accel[3], float gyro[3], float *temperature) {
+    if (!sensor_fresh) {
+        return false;
+    }
     accel[0] = accel[1] = gyro[0] = gyro[1] = gyro[2] = 0;
     accel[2] = -9.80665f;
     *temperature = 25;
@@ -142,7 +156,8 @@ bool bmi270_sensor_read(float accel[3], float gyro[3], float *temperature) {
 }
 void bmi270_sensor_get_diagnostics(bmi270_sensor_diagnostics_t *out) {
     *out = (bmi270_sensor_diagnostics_t){.initialized = true,
-                                         .result = BMI270_SENSOR_OK,
+                                         .result = sensor_fresh ? BMI270_SENSOR_OK
+                                                                : BMI270_SENSOR_NOT_READY,
                                          .chip_id = 0x24,
                                          .internal_status = 1,
                                          .samples = 42};
@@ -170,6 +185,11 @@ static bool request_protocol(uint16_t protocol, uint16_t speed) {
     assert(protocol <= 1 && (speed == 150 || speed == 300 || speed == 600));
     protocol_requests++;
     mock_protocol = protocol;
+    if (protocol_wait_us != 0) {
+        clock_us += protocol_wait_us;
+        assert(irq_callback(&safety_timer));
+        assert(!load_shared(&safety_latched));
+    }
     return mock_request_ok;
 }
 static bool protocol_ready(uint16_t protocol, uint16_t speed) {
@@ -239,6 +259,21 @@ static void init_runtime(void) {
     usb_rx_init();
     assert(core1_entry && irq_callback && rx_callback);
 }
+/* Advance idle wall time with both cores alive. Tests that intentionally stall
+ * core0 instead change clock_us directly and do not use this helper. */
+static void service_for(uint64_t elapsed) {
+    uint64_t deadline = clock_us + elapsed;
+    while (clock_us < deadline) {
+        uint64_t remaining = deadline - clock_us;
+        clock_us += remaining < 2000 ? remaining : 2000;
+        store_shared(&core1_heartbeat, time_us_32());
+        control_runtime_service();
+        uint16_t motors[8];
+        control_runtime_get_motors(motors);
+        control_runtime_output_serviced();
+    }
+}
+
 static void hello(void) {
     control_runtime_capabilities(7);
     clear_tx();
@@ -303,7 +338,8 @@ static void apply_initial_settings(core1_context_t *ctx) {
     control_runtime_service();
     assert(active_generation == 1 && active_digest == digest && !pending_commit);
     assert(find_ack(4, MSG_COMMIT, NULL) == RESULT_APPLIED);
-    control_runtime_service(); /* Next core0 pass publishes the cleared maintenance gate. */
+    /* Do not add a service pass here: the host can send CONTROL as soon as the
+     * COMMIT ACK is observable, before core0 gets another loop iteration. */
     clear_tx();
 }
 static void control(uint32_t sequence, uint32_t flags) {
@@ -330,6 +366,59 @@ static void assert_neutral(void) {
     control_runtime_get_motors(motors);
     for (size_t i = 0; i < 8; ++i)
         assert(motors[i] == 1000);
+}
+
+static void test_commit_ack_releases_control_immediately(void) {
+    hello();
+    core1_context_t ctx;
+    check_commit_ack_ready = true;
+    apply_initial_settings(&ctx);
+    check_commit_ack_ready = false;
+    assert(ready_commit_acks == 1);
+    control(5, 4);
+    core1_process_events(&ctx, time_us_32(), true);
+    const control_sample_t sample = {.accel = {0, 0, -9.80665f}};
+    core1_sample(&ctx, &sample, 25, time_us_32());
+    assert(command_calls == 1 && step_calls == 1 && ctx.command_sequence == 5);
+    assert(ctx.snapshot.output.motors[0] == 1250);
+}
+
+static void test_protocol_neutral_wait_success(void) {
+    hello();
+    core1_context_t ctx;
+    protocol_wait_us = 20000;
+    uint64_t before = clock_us;
+    apply_initial_settings(&ctx);
+    assert(clock_us == before + protocol_wait_us && protocol_requests == 1);
+    assert(active_session == SESSION && safety_failed_session == 0 && !safety_latched);
+    assert(!pending_commit && settings_reconciled);
+    control(5, 4);
+    core1_process_events(&ctx, time_us_32(), true);
+    const control_sample_t sample = {.accel = {0, 0, -9.80665f}};
+    core1_sample(&ctx, &sample, 25, time_us_32());
+    assert(command_calls == 1 && step_calls == 1);
+}
+
+static void test_protocol_neutral_wait_rejection(void) {
+    hello();
+    uint8_t wire[CONTROL_SETTINGS_WIRE_SIZE];
+    settings_image(wire);
+    uint32_t digest = control_crc32c(wire, sizeof(wire));
+    begin(2, 1, digest);
+    chunk(3, 0, wire, sizeof(wire));
+    clear_tx();
+    mock_request_ok = false;
+    protocol_wait_us = 20000;
+    commit(4, 1, digest);
+    assert(find_ack(4, MSG_COMMIT, NULL) == RESULT_BUSY);
+    assert(active_session == SESSION && safety_failed_session == 0 && !safety_latched);
+    assert(!pending_commit && active_generation == 0);
+    assert(irq_callback(&safety_timer)); /* Blocking exemption ended; heartbeat must be current. */
+    assert(!safety_latched);
+    receive(5, MSG_QUERY, NULL, 0); /* Receive-side stall guard must not reject this session. */
+    assert(find_ack(5, MSG_QUERY, NULL) == RESULT_APPLIED && active_session == SESSION);
+    control_runtime_service();
+    assert_neutral();
 }
 
 static void test_staging(void) {
@@ -406,9 +495,10 @@ static void test_bad_settings_and_expiry(void) {
     commit(7, 1, digest);
     assert(find_ack(7, MSG_COMMIT, NULL) == RESULT_INVALID && active_generation == 0);
     begin(8, 2, digest);
-    clock_us += SETTINGS_TIMEOUT_US + 1;
+    service_for(SETTINGS_TIMEOUT_US + 1);
     chunk(9, 0, wire, sizeof(wire));
     assert(find_ack(9, MSG_CHUNK, NULL) == RESULT_NOT_READY && !staging_active);
+    assert(active_session == SESSION);
 }
 
 static void test_queued_commit_timeout(void) {
@@ -424,7 +514,7 @@ static void test_queued_commit_timeout(void) {
     commit(7, 2, digest);
     control_runtime_service();
     assert(pending_commit && event_write != event_read);
-    clock_us += 7000001;
+    service_for(7000001);
     control_runtime_service();
     assert(!pending_commit && pending_sequence == 0);
     assert(find_ack(7, MSG_COMMIT, NULL) == RESULT_NOT_READY);
@@ -520,12 +610,37 @@ static void test_irq_starvation(void) {
     assert(find_ack(6, MSG_CONTROL, NULL) == RESULT_NOT_READY);
     receive(1, MSG_HELLO, NULL, 0);
     assert(find_ack(1, MSG_HELLO, NULL) == RESULT_NOT_READY);
-    control_runtime_output_serviced();
-    assert(gpio_normal_calls == 8);
     uint8_t wire[CONTROL_FRAME_MAX];
     size_t count = encode_request(wire, SESSION + 1, 1, MSG_HELLO, NULL, 0);
     control_runtime_receive(wire, count);
+    assert(find_ack(1, MSG_HELLO, NULL) == RESULT_BUSY && active_session == 0);
+    assert(safety_recovery_pending && gpio_normal_calls == 0);
+    control_runtime_output_serviced();
+    assert(gpio_normal_calls == 8);
+    control_runtime_receive(wire, count);
     assert(active_session == SESSION + 1 && active_generation == 0);
+}
+
+static void test_uninitialized_stall_recovers_without_output_service(void) {
+    mock_initialized = false;
+    hello();
+    clock_us += 500000;
+    control_runtime_check_stall();
+    assert(active_session == 0 && safety_failed_session == SESSION);
+    for (unsigned i = 0; i < 3; ++i) {
+        clock_us += 2000;
+        control_runtime_service();
+        assert_neutral();
+        /* main does not call output_serviced before protocol initialization. */
+    }
+    receive(1, MSG_HELLO, NULL, 0);
+    assert(find_ack(1, MSG_HELLO, NULL) == RESULT_NOT_READY && active_session == 0);
+    uint8_t wire[CONTROL_FRAME_MAX];
+    size_t count = encode_request(wire, SESSION + 1, 1, MSG_HELLO, NULL, 0);
+    control_runtime_receive(wire, count);
+    assert(find_ack(1, MSG_HELLO, NULL) == RESULT_APPLIED);
+    assert(active_session == SESSION + 1 && active_generation == 0);
+    assert(!safety_recovery_pending && !control_runtime_output_permitted());
 }
 
 static void test_pwm_and_host_irq(void) {
@@ -569,9 +684,10 @@ static void test_commands_pressure_and_sensor(void) {
     core1_process_events(&ctx, time_us_32(), true);
     assert(command_calls == 3 && ctx.command_valid && ctx.stats.depth == 1);
     uint32_t host_time = ctx.command_time;
-    clock_us += HOST_TIMEOUT_US + 1;
+    service_for(HOST_TIMEOUT_US + 1);
     pressure(10);
     core1_process_events(&ctx, time_us_32(), true);
+    assert(ctx.pressure_time == time_us_32() && core1_pressure_healthy(&ctx, time_us_32()));
     assert(ctx.command_time == host_time && !core1_control_permitted(&ctx, time_us_32()));
     core1_snapshot(&ctx, time_us_32());
     assert((ctx.snapshot.health & 4u) == 0);
@@ -612,7 +728,7 @@ static void test_sensor_retry_handshake(void) {
     core1_context_t ctx;
     apply_initial_settings(&ctx);
     ctx.sensor_initialized = false;
-    clock_us += 1000001;
+    service_for(1000001);
     raw(5, 1000);
     assert_neutral();
     assert(control_runtime_output_permitted());
@@ -674,7 +790,7 @@ static void test_parser_atomic_and_timeout_tail(void) {
     assert_neutral();
     count = encode_request(wire, SESSION, 6, 0xfe, legacy, sizeof(legacy));
     feed(wire, 14); /* Truncated frame then a payload shaped as a legacy packet after timeout. */
-    clock_us += 100001;
+    service_for(100001);
     feed(legacy, sizeof(legacy));
     assert(parser_legacy_packets == 1); /* Parser resyncs; negotiated authority gate refuses it. */
     assert_neutral();
@@ -697,7 +813,7 @@ static void test_rx_arrival_lease_and_overflow(void) {
     legacy_packet(wire, 1500);
     irq_receive(wire, sizeof(wire));
     uint32_t arrival = time_us_32();
-    clock_us += HOST_TIMEOUT_US + 1;
+    service_for(HOST_TIMEOUT_US + 1);
     usb_packet_kind_t kind = usb_poll(readers, 2);
     assert(kind == USB_PACKET_COMMAND && readers[1].last_byte_time == arrival);
     dispatch(kind);
@@ -721,10 +837,258 @@ static void test_rx_old_extended_lease(void) {
         control_put_u16(payload + 2 * i, 1500);
     size_t count = encode_request(wire, SESSION, 5, MSG_RAW, payload, sizeof(payload));
     irq_receive(wire, count);
-    clock_us += HOST_TIMEOUT_US + 1;
+    service_for(HOST_TIMEOUT_US + 1);
     dispatch(usb_poll(readers, 2));
     assert_neutral();
     assert(!control_runtime_output_permitted());
+}
+
+static void test_first_queued_control_preserves_fresh_authority(void) {
+    hello();
+    core1_context_t ctx;
+    apply_initial_settings(&ctx);
+    const control_sample_t sample = {.accel = {0, 0, -9.80665f}};
+    for (uint32_t sequence = 5; sequence <= 6; ++sequence) {
+        if (sequence == 6) {
+            service_for(HOST_TIMEOUT_US + 1);
+            assert(!control_runtime_output_permitted());
+        }
+        control(sequence, 4);
+        assert(event_write - event_read == 1);
+        /* Core0 may arbitrate between receipt and the first new core1 allocation.
+         * No snapshot yet / the previous snapshot is expired: neutral, not a
+         * revocation of the newly accepted command's lease and sequence. */
+        assert_neutral();
+        assert(authority && load_shared(&accepted_floor) < sequence);
+        assert(active_session == SESSION && !control_runtime_output_permitted());
+        core1_process_events(&ctx, time_us_32(), true);
+        core1_sample(&ctx, &sample, 25, time_us_32());
+        core1_snapshot(&ctx, time_us_32());
+        core1_publish(&ctx);
+        control_runtime_service();
+        uint16_t motors[8];
+        control_runtime_get_motors(motors);
+        assert(ctx.command_sequence == sequence && motors[0] == 1250);
+        assert(control_runtime_output_permitted());
+    }
+    assert(command_calls == 2 && step_calls == 2);
+}
+
+/* Retire stale state at an ordinary expiry check before wrapping the low 32-bit
+ * clock. Keep core0's heartbeat current: a stall poison must not mask a failed
+ * lease/health retirement assertion. */
+static void set_live_core0_time(uint64_t now) {
+    clock_us = now;
+    store_shared(&core0_heartbeat, time_us_32());
+    store_shared(&core1_heartbeat, time_us_32());
+}
+
+static void test_control_expiry_does_not_wrap_revive(void) {
+    hello();
+    core1_context_t ctx;
+    apply_initial_settings(&ctx);
+    control(5, 4);
+    const control_sample_t sample = {.accel = {0, 0, -9.80665f}};
+    uint64_t original = clock_us;
+    core1_process_events(&ctx, time_us_32(), true);
+    core1_sample(&ctx, &sample, 25, time_us_32());
+    core1_snapshot(&ctx, time_us_32());
+    assert(command_calls == 1 && step_calls == 1 && (ctx.snapshot.health & 4u));
+
+    set_live_core0_time(original + HOST_TIMEOUT_US + 1);
+    core1_process_events(&ctx, time_us_32(), true);
+    core1_sample(&ctx, &sample, 25, time_us_32());
+    core1_snapshot(&ctx, time_us_32());
+    assert(!(ctx.snapshot.health & 4u) && step_calls == 1);
+
+    set_live_core0_time(original + (UINT64_C(1) << 32) + 1000);
+    core1_process_events(&ctx, time_us_32(), true);
+    core1_sample(&ctx, &sample, 25, time_us_32());
+    core1_snapshot(&ctx, time_us_32());
+    assert(command_calls == 1 && step_calls == 1 && !(ctx.snapshot.health & 4u));
+    core1_publish(&ctx);
+    control_runtime_service();
+    assert_neutral();
+    assert(!control_runtime_output_permitted());
+}
+
+static void test_raw_expiry_does_not_wrap_revive(void) {
+    hello();
+    core1_context_t ctx;
+    apply_initial_settings(&ctx);
+    raw(5, 1500);
+    uint16_t motors[8];
+    control_runtime_get_motors(motors);
+    assert(motors[0] == 1500 && control_runtime_output_permitted());
+    uint64_t original = clock_us;
+
+    set_live_core0_time(original + HOST_TIMEOUT_US + 1);
+    control_runtime_service();
+    assert_neutral();
+    assert(!control_runtime_output_permitted());
+
+    set_live_core0_time(original + (UINT64_C(1) << 32) + 1000);
+    control_runtime_service();
+    assert_neutral();
+    assert(!control_runtime_output_permitted());
+}
+
+static void test_pressure_expiry_does_not_wrap_revive(void) {
+    hello();
+    core1_context_t ctx;
+    apply_initial_settings(&ctx);
+    pressure(5);
+    core1_process_events(&ctx, time_us_32(), true);
+    uint64_t original = clock_us;
+    assert(core1_pressure_healthy(&ctx, time_us_32()));
+
+    set_live_core0_time(original + PRESSURE_TIMEOUT_US + 1);
+    core1_process_events(&ctx, time_us_32(), false);
+    core1_snapshot(&ctx, time_us_32());
+    assert(!core1_pressure_healthy(&ctx, time_us_32()));
+
+    set_live_core0_time(original + (UINT64_C(1) << 32) + 1000);
+    core1_process_events(&ctx, time_us_32(), false);
+    core1_snapshot(&ctx, time_us_32());
+    assert(!core1_pressure_healthy(&ctx, time_us_32()));
+    /* A genuinely fresh command must not consume 71-minute-old pressure. */
+    control_event_t event = {.type = MSG_CONTROL,
+                             .session = SESSION,
+                             .sequence = 6,
+                             .received_us = time_us_32(),
+                             .flags = 6};
+    event.values[8] = 1.0f / 60.0f;
+    core1_apply_command(&ctx, &event, time_us_32());
+    assert(command_calls == 0 && !ctx.command_valid);
+
+    control_event_t fresh_pressure = {.type = MSG_PRESSURE,
+                                      .session = SESSION,
+                                      .sequence = 7,
+                                      .received_us = time_us_32(),
+                                      .flags = 1,
+                                      .values = {2, 0}};
+    core1_apply_event(&ctx, &fresh_pressure, time_us_32());
+    event.sequence = 8;
+    core1_apply_command(&ctx, &event, time_us_32());
+    assert(command_calls == 1 && ctx.command_valid && ctx.stats.depth == 1);
+    assert(ctx.state.depth == 2);
+
+    fresh_pressure.sequence = 9;
+    fresh_pressure.flags = 0;
+    core1_apply_event(&ctx, &fresh_pressure, time_us_32());
+    set_live_core0_time(clock_us + (UINT64_C(1) << 32) + 1);
+    core1_process_events(&ctx, time_us_32(), false);
+    core1_snapshot(&ctx, time_us_32());
+    assert(!core1_pressure_healthy(&ctx, time_us_32()));
+    event.sequence = 10;
+    event.received_us = time_us_32();
+    core1_apply_command(&ctx, &event, time_us_32());
+    assert(command_calls == 1 && !ctx.command_valid);
+}
+
+static void test_sample_expiry_does_not_wrap_revive(void) {
+    hello();
+    core1_context_t ctx;
+    apply_initial_settings(&ctx);
+    control_sample_t sample = {.accel = {0, 0, -9.80665f}};
+    core1_sample(&ctx, &sample, 25, time_us_32());
+    core1_snapshot(&ctx, time_us_32());
+    uint64_t original = clock_us;
+    assert(ctx.snapshot.health & 1u);
+
+    sensor_fresh = false;
+    float temperature;
+    set_live_core0_time(original + OUTPUT_TIMEOUT_US + 1);
+    assert(!core1_read_sensor(&ctx, &sample, &temperature) && ctx.sensor_initialized);
+    core1_process_events(&ctx, time_us_32(), false);
+    core1_snapshot(&ctx, time_us_32());
+    assert(!(ctx.snapshot.health & 1u));
+
+    set_live_core0_time(original + (UINT64_C(1) << 32) + 1000);
+    assert(!core1_read_sensor(&ctx, &sample, &temperature) && ctx.sensor_initialized);
+    core1_process_events(&ctx, time_us_32(), false);
+    core1_snapshot(&ctx, time_us_32());
+    assert(!(ctx.snapshot.health & 1u));
+    /* Health can recover only on a fresh sensor sample, not clock aliasing. */
+    sensor_fresh = true;
+    assert(core1_read_sensor(&ctx, &sample, &temperature));
+    core1_sample(&ctx, &sample, temperature, time_us_32());
+    core1_snapshot(&ctx, time_us_32());
+    assert(ctx.snapshot.health & 1u);
+}
+
+static void neutral_stall(unsigned resume_path, bool raw_command) {
+    hello();
+    core1_context_t ctx;
+    apply_initial_settings(&ctx);
+    raw(5, 1000);
+    assert_neutral();
+    assert(control_runtime_output_permitted() && !load_shared(&safety_armed));
+    assert(load_shared(&shared_session) == SESSION);
+
+    uint8_t payload[40] = {0};
+    uint16_t length;
+    uint8_t type;
+    if (raw_command) {
+        type = MSG_RAW;
+        length = 16;
+        for (size_t i = 0; i < 8; ++i)
+            control_put_u16(payload + 2 * i, 1500);
+    } else {
+        type = MSG_CONTROL;
+        length = 40;
+        control_put_f32(payload, 0.5f);
+        control_put_f32(payload + 32, 1.0f / 60.0f);
+        control_put_u32(payload + 36, 4);
+    }
+    /* Bytes exist in hardware before the USB worker gets CPU/IRQs back. */
+    incoming_read = 0;
+    incoming_length = encode_request(incoming, SESSION, 6, type, payload, length);
+    clock_us += 500000;
+    if (resume_path == 1) {
+        assert(irq_callback(&safety_timer));
+        assert(load_shared(&safety_latched)); /* Neutral must not disable the stall IRQ guard. */
+    } else if (resume_path == 2) {
+        control_runtime_service();
+        assert(active_session == 0); /* Service alone must check its old heartbeat. */
+    }
+    rx_callback(rx_context);        /* Delayed worker inevitably stamps the old bytes with 'now'. */
+    dispatch(usb_poll(readers, 2)); /* Main receives before its next runtime service. */
+    assert(active_session == 0 && safety_failed_session == SESSION);
+    control_runtime_service();
+    core1_session(&ctx);
+    core1_process_events(&ctx, time_us_32(), true);
+    const control_sample_t sample = {.accel = {0, 0, -9.80665f}};
+    core1_sample(&ctx, &sample, 25, time_us_32());
+    core1_snapshot(&ctx, time_us_32());
+    core1_publish(&ctx);
+    control_runtime_service();
+    assert_neutral();
+    assert(command_calls == 0 && !control_runtime_output_permitted());
+    receive(1, MSG_HELLO, NULL, 0);
+    assert(find_ack(1, MSG_HELLO, NULL) == RESULT_NOT_READY);
+
+    control_runtime_output_serviced();
+    uint8_t wire[CONTROL_FRAME_MAX];
+    size_t count = encode_request(wire, SESSION + 1, 1, MSG_HELLO, NULL, 0);
+    control_runtime_receive_at(wire, count, time_us_32());
+    assert(active_session == SESSION + 1 && active_generation == 0);
+    count = encode_request(wire, SESSION + 1, 2, type, payload, length);
+    control_runtime_receive_at(wire, count, time_us_32());
+    assert(find_ack(2, type, NULL) == RESULT_NOT_READY); /* New settings are mandatory. */
+    assert_neutral();
+}
+static void test_neutral_stall_receive_control(void) {
+    neutral_stall(0, false);
+}
+static void test_neutral_stall_receive_raw(void) {
+    neutral_stall(0, true);
+}
+static void test_neutral_stall_irq_before_ingress(void) {
+    neutral_stall(1, false);
+}
+static void test_neutral_stall_service_only(void) {
+    neutral_stall(2, false);
 }
 
 int main(int argc, char **argv) {
@@ -737,12 +1101,16 @@ int main(int argc, char **argv) {
         return 0;                                                                                  \
     }
     CASE(staging)
+    CASE(commit_ack_releases_control_immediately)
+    CASE(protocol_neutral_wait_success)
+    CASE(protocol_neutral_wait_rejection)
     CASE(empty_abort_idempotent)
     CASE(bad_settings_and_expiry)
     CASE(queued_commit_timeout)
     CASE(duplicate_fingerprint)
     CASE(gate_retry)
     CASE(irq_starvation)
+    CASE(uninitialized_stall_recovers_without_output_service)
     CASE(pwm_and_host_irq)
     CASE(commands_pressure_and_sensor)
     CASE(stale_hol_commit)
@@ -750,6 +1118,15 @@ int main(int argc, char **argv) {
     CASE(parser_atomic_and_timeout_tail)
     CASE(rx_arrival_lease_and_overflow)
     CASE(rx_old_extended_lease)
+    CASE(first_queued_control_preserves_fresh_authority)
+    CASE(control_expiry_does_not_wrap_revive)
+    CASE(raw_expiry_does_not_wrap_revive)
+    CASE(pressure_expiry_does_not_wrap_revive)
+    CASE(sample_expiry_does_not_wrap_revive)
+    CASE(neutral_stall_receive_control)
+    CASE(neutral_stall_receive_raw)
+    CASE(neutral_stall_irq_before_ingress)
+    CASE(neutral_stall_service_only)
 #undef CASE
     fprintf(stderr, "Unknown scenario: %s\n", argv[1]);
     return 2;

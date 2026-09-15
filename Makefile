@@ -73,6 +73,7 @@ test:
 		$(TEST_DIR)/test_usb_buffers.c -o $(TEST_BUILD_DIR)/test_usb_buffers
 	./$(TEST_BUILD_DIR)/test_usb_buffers
 	python3 $(TEST_DIR)/test_control_runtime.py
+	python3 $(TEST_DIR)/test_control_smoke.py
 
 help:
 	@echo "Available targets:"

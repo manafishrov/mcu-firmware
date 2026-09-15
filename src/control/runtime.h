@@ -19,6 +19,7 @@ void control_runtime_capabilities(uint8_t request_id);
 void control_runtime_receive(const uint8_t *packet, size_t length);
 void control_runtime_receive_at(const uint8_t *packet, size_t length, uint32_t received_us);
 void control_runtime_service(void);
+void control_runtime_check_stall(void);
 void control_runtime_legacy_input(const uint16_t motors[8]);
 void control_runtime_legacy_input_at(const uint16_t motors[8], uint32_t received_us);
 void control_runtime_get_motors(uint16_t motors[8]);

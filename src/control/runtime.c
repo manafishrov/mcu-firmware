@@ -104,6 +104,9 @@ static uint32_t last_result = RESULT_NOT_READY;
 static bool capability_requested, raw_override, authority, pending_commit;
 static bool maintenance_latched;
 static bool settings_reconciled;
+static uint32_t authority_received_us;
+
+static void recover_safety_latch(void);
 static uint32_t raw_applied_sequence, raw_sequence, neutral_output_rounds;
 static bool pending_gate;
 static bool commit_queued;
@@ -230,13 +233,30 @@ static void applied_push(const control_event_t *event, uint32_t result) {
     store_shared(&ack_write, write + 1u);
 }
 
+static bool core0_stalled(uint32_t now) {
+    /* Session ingress needs protection even when zero power leaves every motor
+       neutral and the physical-output watchdog is disarmed. Explicit neutral
+       protocol transitions are the only active-session blocking exemption. */
+    return load_shared(&shared_session) != 0 && !load_shared(&maintenance) &&
+           age_us(now, load_shared(&core0_heartbeat)) > OUTPUT_TIMEOUT_US;
+}
+
+void control_runtime_check_stall(void) {
+    if (core0_stalled(now_us())) {
+        store_shared(&safety_latched, 1);
+    }
+    if (load_shared(&safety_latched)) {
+        recover_safety_latch();
+    }
+}
+
 static bool safety_interrupt(struct repeating_timer *timer) {
     (void)timer;
     uint32_t now = now_us();
-    if (load_shared(&safety_armed) &&
-        (age_us(now, load_shared(&core0_heartbeat)) > OUTPUT_TIMEOUT_US ||
-         age_us(now, load_shared(&safety_output_us)) > OUTPUT_TIMEOUT_US ||
-         age_us(now, load_shared(&safety_host_us)) > HOST_TIMEOUT_US)) {
+    bool output_expired = load_shared(&safety_armed) &&
+                          (age_us(now, load_shared(&safety_output_us)) > OUTPUT_TIMEOUT_US ||
+                           age_us(now, load_shared(&safety_host_us)) > HOST_TIMEOUT_US);
+    if (core0_stalled(now) || output_expired) {
         store_shared(&safety_latched, 1);
         for (unsigned i = 0; i < 8; ++i) {
             if (load_shared(&physical_protocol) == 0u) {
@@ -279,7 +299,22 @@ typedef struct {
     uint64_t stats_started;
     bool pressure_healthy, stabilization, depth_hold, command_valid;
     bool sensor_initialized;
+    bool sample_valid;
 } core1_context_t;
+
+static void core1_expire_inputs(core1_context_t *ctx, uint32_t now) {
+    /* Retire lifetime state once. A later wrap of the 32-bit hardware clock
+       must never turn an expired cached input into a fresh input again. */
+    if (ctx->command_valid && age_us(now, ctx->command_time) > HOST_TIMEOUT_US) {
+        ctx->command_valid = false;
+    }
+    if (ctx->pressure_healthy && age_us(now, ctx->pressure_time) > PRESSURE_TIMEOUT_US) {
+        ctx->pressure_healthy = false;
+    }
+    if (ctx->sample_valid && age_us(now, ctx->sample_time) > OUTPUT_TIMEOUT_US) {
+        ctx->sample_valid = false;
+    }
+}
 
 static bool core1_pressure_healthy(const core1_context_t *ctx, uint32_t now) {
     return ctx->pressure_healthy && age_us(now, ctx->pressure_time) <= PRESSURE_TIMEOUT_US;
@@ -299,6 +334,7 @@ static bool core1_command_current(const control_event_t *event, uint32_t now) {
 }
 
 static void core1_apply_command(core1_context_t *ctx, const control_event_t *event, uint32_t now) {
+    core1_expire_inputs(ctx, now);
     /* Reject stale depth input before the pure command can advance its PID or
        targets. Pressure never renews a lease or replays a rejected command. */
     bool depth = (event->flags & 2u) != 0;
@@ -353,6 +389,7 @@ static void core1_apply_event(core1_context_t *ctx, const control_event_t *event
 }
 
 static void core1_process_events(core1_context_t *ctx, uint32_t now, bool fresh) {
+    core1_expire_inputs(ctx, now);
     uint32_t read = load_shared(&event_read);
     /* Bound each pass to the queue observed at entry, even if USB keeps writing. */
     uint32_t write = load_shared(&event_write);
@@ -450,8 +487,10 @@ static bool core1_read_sensor(core1_context_t *ctx, control_sample_t *sample, fl
 
 static void core1_sample(core1_context_t *ctx, const control_sample_t *sample, float temperature,
                          uint32_t now) {
-    float dt = ctx->sample_time == 0 ? 0.002f : (float)age_us(now, ctx->sample_time) * 0.000001f;
+    core1_expire_inputs(ctx, now);
+    float dt = ctx->sample_valid ? (float)age_us(now, ctx->sample_time) * 0.000001f : 0.002f;
     ctx->sample_time = now;
+    ctx->sample_valid = true;
     ctx->snapshot.sample = *sample;
     ctx->snapshot.temperature = temperature;
     if (core1_control_permitted(ctx, now)) {
@@ -466,7 +505,8 @@ static void core1_sample(core1_context_t *ctx, const control_sample_t *sample, f
 }
 
 static void core1_snapshot(core1_context_t *ctx, uint32_t now) {
-    bool imu = ctx->sensor_initialized && ctx->sample_time != 0 &&
+    core1_expire_inputs(ctx, now);
+    bool imu = ctx->sensor_initialized && ctx->sample_valid &&
                age_us(now, ctx->sample_time) <= OUTPUT_TIMEOUT_US;
     bool pressure = core1_pressure_healthy(ctx, now);
     bool allowed = imu && core1_control_permitted(ctx, now);
@@ -680,7 +720,12 @@ static uint32_t settings_commit(const control_frame_t *frame, uint32_t received)
     /* Output hardware may transition before pure settings, but it has no thrust
        authority throughout. Only the final core1 ACK commits the generation. */
     control_runtime_inhibit();
+    /* This callback may perform the existing neutral ESC initialization wait.
+       Advertise that deliberate output-inhibited interval before entering it. */
+    store_shared(&maintenance, 1);
     if (!callbacks.request_protocol(pending_protocol, pending_speed)) {
+        store_shared(&core0_heartbeat, now_us());
+        store_shared(&maintenance, 0);
         return RESULT_BUSY;
     }
     settings_reconciled = false;
@@ -786,6 +831,7 @@ static uint32_t decode_command(const control_frame_t *frame, control_event_t *ev
         control_runtime_inhibit();
     } else {
         authority = true;
+        authority_received_us = event->received_us;
         raw_override = false;
         maintenance_latched = false;
     }
@@ -843,6 +889,7 @@ static uint32_t command_request(const control_frame_t *frame, uint32_t received)
 }
 
 void control_runtime_receive_at(const uint8_t *packet, size_t length, uint32_t received) {
+    control_runtime_check_stall();
     static control_frame_t frame;
     if (!control_frame_decode(packet, length, &frame)) {
         control_runtime_inhibit();
@@ -900,6 +947,7 @@ void control_runtime_receive(const uint8_t *packet, size_t length) {
 }
 
 void control_runtime_legacy_input_at(const uint16_t motors[8], uint32_t received) {
+    control_runtime_check_stall();
     if ((active_session != 0 || maintenance_latched) && !motors_neutral(motors)) {
         control_runtime_inhibit();
         return;
@@ -917,6 +965,15 @@ void control_runtime_legacy_input(const uint16_t motors[8]) {
 
 void control_runtime_get_motors(uint16_t motors[8]) {
     uint32_t now = now_us();
+    /* Authority lifetime belongs to accepted ingress, not the last output
+       snapshot: a fresh CONTROL may still be queued on core1. */
+    uint32_t accepted_time = raw_override ? raw_received_us : authority_received_us;
+    if (authority && age_us(now, accepted_time) > HOST_TIMEOUT_US) {
+        control_runtime_inhibit();
+    }
+    if (age_us(now, latest.completed_us) > OUTPUT_TIMEOUT_US) {
+        latest.health &= ~5u;
+    }
     neutral(motors);
     bool ready = callbacks.outputs_initialized() && !callbacks.maintenance_active() &&
                  !callbacks.recovery_required() && !pending_commit &&
@@ -946,6 +1003,13 @@ void control_runtime_get_motors(uint16_t motors[8]) {
     store_shared(&safety_armed, valid && !motors_neutral(motors) ? 1u : 0u);
 }
 
+static void finish_safety_recovery(void) {
+    for (unsigned i = 0; i < 8; ++i) {
+        gpio_set_outover(motor_pins[i], GPIO_OVERRIDE_NORMAL);
+    }
+    safety_recovery_pending = false;
+}
+
 void control_runtime_output_serviced(void) {
     if (load_shared(&sensor_retry_requested) && !effective_valid &&
         motors_neutral(effective_motors)) {
@@ -959,10 +1023,7 @@ void control_runtime_output_serviced(void) {
         }
     }
     if (safety_recovery_pending && motors_neutral(effective_motors)) {
-        for (unsigned i = 0; i < 8; ++i) {
-            gpio_set_outover(motor_pins[i], GPIO_OVERRIDE_NORMAL);
-        }
-        safety_recovery_pending = false;
+        finish_safety_recovery();
     }
 }
 
@@ -1106,10 +1167,16 @@ static void consume_snapshots(void) {
 }
 
 static void finish_commit(uint32_t result) {
-    send_ack(active_session, pending_sequence, MSG_COMMIT, result);
+    uint32_t sequence = pending_sequence;
     pending_sequence = 0;
     pending_commit = commit_queued = staging_active = false;
     store_shared(&commit_authorized_sequence, 0);
+    /* Core1 can consume the first CONTROL immediately after the host sees ACK,
+       before core0 services another loop. Publish the completed transition now. */
+    bool suspended = callbacks.maintenance_active() || callbacks.recovery_required() ||
+                     load_shared(&sensor_retry_requested);
+    store_shared(&maintenance, suspended ? 1u : 0u);
+    send_ack(active_session, sequence, MSG_COMMIT, result);
 }
 
 static void service_commit(uint32_t now) {
@@ -1215,6 +1282,7 @@ static void service_gate(void) {
 }
 
 void control_runtime_service(void) {
+    control_runtime_check_stall();
     uint32_t now = now_us();
     store_shared(&core0_heartbeat, now);
     bool suspended = callbacks.maintenance_active() || callbacks.recovery_required() ||
@@ -1228,6 +1296,11 @@ void control_runtime_service(void) {
     }
     if (load_shared(&safety_latched)) {
         recover_safety_latch();
+    }
+    if (safety_recovery_pending && !callbacks.outputs_initialized()) {
+        /* Main cannot service a waveform before initialization. As with the
+           maintenance gate, uninitialized outputs are already inhibited. */
+        finish_safety_recovery();
     }
     consume_snapshots();
     consume_acknowledgements();

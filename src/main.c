@@ -241,8 +241,16 @@ static void service_esc_version_discovery(void) {
     if (absolute_time_diff_us(next_esc_version_discovery_time, now) < 0) {
         return;
     }
-    dshot_send_command_to_all(&dshot_controller0, &dshot_controller1,
-                              DSHOT_EXTENDED_TELEMETRY_ENABLE, 10);
+    /* Discovery runs during a negotiated neutral session too. Queue the same
+       volatile EDT repeats through the normal channel scheduler rather than
+       blocking USB/heartbeat service with the startup helper's sleeps. */
+    for (int motor = 0; motor < NUM_MOTORS; ++motor) {
+        struct dshot_controller *controller;
+        int channel;
+        dshot_get_motor_controller(motor, &controller, &channel, &dshot_controller0,
+                                   &dshot_controller1);
+        dshot_command(controller, (uint16_t)channel, DSHOT_EXTENDED_TELEMETRY_ENABLE, 10);
+    }
     esc_version_discovery_attempts++;
     next_esc_version_discovery_time = delayed_by_ms(now, ESC_VERSION_DISCOVERY_RETRY_MS);
 }
@@ -821,6 +829,7 @@ int main(void) {
     esc_firmware_update_reset();
 
     while (true) {
+        control_runtime_check_stall();
         usb_packet_kind_t packet_kind = usb_poll(readers, sizeof(readers) / sizeof(readers[0]));
 
         if (packet_kind == USB_PACKET_CONTROL) {

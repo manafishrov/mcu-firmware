@@ -21,12 +21,16 @@ ROOT = Path(__file__).resolve().parents[1]
 MOCKS = ROOT / "tests/control_runtime_mocks"
 SCENARIOS = (
     "staging",
+    "commit_ack_releases_control_immediately",
+    "protocol_neutral_wait_success",
+    "protocol_neutral_wait_rejection",
     "empty_abort_idempotent",
     "bad_settings_and_expiry",
     "queued_commit_timeout",
     "duplicate_fingerprint",
     "gate_retry",
     "irq_starvation",
+    "uninitialized_stall_recovers_without_output_service",
     "pwm_and_host_irq",
     "commands_pressure_and_sensor",
     "stale_hol_commit",
@@ -34,6 +38,15 @@ SCENARIOS = (
     "parser_atomic_and_timeout_tail",
     "rx_arrival_lease_and_overflow",
     "rx_old_extended_lease",
+    "first_queued_control_preserves_fresh_authority",
+    "control_expiry_does_not_wrap_revive",
+    "raw_expiry_does_not_wrap_revive",
+    "pressure_expiry_does_not_wrap_revive",
+    "sample_expiry_does_not_wrap_revive",
+    "neutral_stall_receive_control",
+    "neutral_stall_receive_raw",
+    "neutral_stall_irq_before_ingress",
+    "neutral_stall_service_only",
 )
 
 
