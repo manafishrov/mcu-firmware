@@ -11,6 +11,8 @@
 #define USB_INPUT_PACKET_SIZE(num_motors) (1 + ((num_motors) * 2) + 1)
 #define USB_COMM_TIMEOUT_MS 200
 #define USB_PACKET_TIMEOUT_MS 250
+#define USB_CONTROL_START_BYTE 0xF0
+#define USB_CONTROL_MAX_PACKET_SIZE 786
 
 typedef enum {
     USB_PACKET_NONE = 0,
@@ -18,6 +20,8 @@ typedef enum {
     USB_PACKET_CONFIG,
     USB_PACKET_ESC_FIRMWARE_CONTROL,
     USB_PACKET_ESC_FIRMWARE_DATA,
+    USB_PACKET_CONTROL,
+    USB_PACKET_INVALID,
 } usb_packet_kind_t;
 
 typedef struct {

@@ -6,7 +6,7 @@ TEST_SRC = $(TEST_DIR)/test_main.c $(TEST_SUITE_SRC)
 TEST_SUITE_SRC = $(filter-out $(TEST_DIR)/test_main.c,$(wildcard $(TEST_DIR)/test_*.c))
 TEST_STUB_SRC = $(wildcard $(TEST_DIR)/stubs/*.c)
 TEST_UNITY_SRC = $(TEST_DIR)/unity/unity.c
-TEST_APP_SRC = src/usb_comm.c src/runtime_config.c src/esc_firmware/update.c src/pwm/control.c src/pwm/pwm.c src/dshot/control.c src/dshot/telemetry_usb.c src/dshot/current_sensing.c
+TEST_APP_SRC = src/control/controller.c src/control/protocol.c src/usb_rx.c src/usb_tx.c src/usb_comm.c src/runtime_config.c src/esc_firmware/update.c src/pwm/control.c src/pwm/pwm.c src/dshot/control.c src/dshot/telemetry_usb.c src/dshot/current_sensing.c
 TEST_RELEASE_VERSION = 1.0.2-rc.3
 CMAKE_FLAGS = -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPICO_SDK_FETCH_FROM_GIT=ON -DPython3_EXECUTABLE=$(shell which python3)
 CMAKE_FLAGS_PICO2 = $(CMAKE_FLAGS) -DPICO_BOARD=pico2
@@ -35,10 +35,10 @@ clean:
 	rm -rf build
 
 format:
-	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" | xargs clang-format -i
+	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" ! -path "./third_party/*" | xargs clang-format -i
 
 format-check:
-	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" | xargs clang-format --dry-run --Werror
+	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" ! -path "./third_party/*" | xargs clang-format --dry-run --Werror
 
 lint: build-pico
 	find src -name "*.c" | xargs clang-tidy --fix-errors \
@@ -62,9 +62,17 @@ test:
 	mkdir -p $(TEST_BUILD_DIR)
 	cc -std=c11 -Wall -Wextra -DMANAFISH_RELEASE_VERSION='"$(TEST_RELEASE_VERSION)"' -I$(TEST_DIR)/mocks -I$(TEST_DIR) -Isrc \
 		$(TEST_SRC) $(TEST_STUB_SRC) $(TEST_UNITY_SRC) $(TEST_APP_SRC) \
-		-o $(TEST_BUILD_DIR)/run_tests
+		-lm -o $(TEST_BUILD_DIR)/run_tests
 	./$(TEST_BUILD_DIR)/run_tests
 	python3 $(TEST_DIR)/test_startup_commands.py
+	cc -std=c11 -Wall -Wextra -Werror -DBMI270_SENSOR_TEST -Ithird_party/bmi270 \
+		$(TEST_DIR)/test_bmi270_sensor.c third_party/bmi270/bmi2.c third_party/bmi270/bmi270.c \
+		-lm -o $(TEST_BUILD_DIR)/test_bmi270_sensor
+	./$(TEST_BUILD_DIR)/test_bmi270_sensor
+	cc -std=c11 -Wall -Wextra -Werror -DUSB_BUFFERS_TEST -I$(TEST_DIR)/usb_buffer_mocks \
+		$(TEST_DIR)/test_usb_buffers.c -o $(TEST_BUILD_DIR)/test_usb_buffers
+	./$(TEST_BUILD_DIR)/test_usb_buffers
+	python3 $(TEST_DIR)/test_control_runtime.py
 
 help:
 	@echo "Available targets:"

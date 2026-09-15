@@ -1,5 +1,6 @@
 #include "telemetry_usb.h"
 #include "../usb_comm.h"
+#include "../usb_tx.h"
 #include "current_sensing.h"
 #include "dshot.h"
 #include "motors.h"
@@ -130,10 +131,10 @@ void dshot_telemetry_usb_flush(void) {
 
         batch[batch_len] = usb_calculate_checksum(batch, batch_len);
         batch_len += TELEMETRY_BATCH_FOOTER_SIZE;
-        fwrite(batch, 1, batch_len, stdout);
+        (void)usb_tx_packet(batch, batch_len, false);
     }
 
-    fflush(stdout);
+    usb_tx_service();
 }
 
 void dshot_telemetry_usb_send(uint8_t motor_id, uint8_t type, int32_t value) {

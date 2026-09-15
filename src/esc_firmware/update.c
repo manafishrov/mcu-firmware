@@ -1,5 +1,6 @@
 #include "update.h"
 #include "usb_comm.h"
+#include "usb_tx.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -253,6 +254,5 @@ void esc_firmware_update_send_status(esc_firmware_update_status_t status, uint8_
     packet[10] = (uint8_t)(last_sequence >> 8);
     packet[ESC_FIRMWARE_USB_STATUS_PACKET_SIZE - 1] =
         usb_calculate_checksum(packet, ESC_FIRMWARE_USB_STATUS_PACKET_SIZE - 1);
-    fwrite(packet, 1, sizeof(packet), stdout);
-    (void)fflush(stdout);
+    (void)usb_tx_packet(packet, sizeof(packet), true);
 }

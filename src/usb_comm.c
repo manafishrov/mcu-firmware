@@ -1,7 +1,7 @@
 #include "usb_comm.h"
 #include "log.h"
+#include "usb_rx.h"
 #include <pico/error.h>
-#include <pico/stdio.h>
 #include <pico/time.h>
 #include <pico/types.h>
 #include <stdbool.h>
@@ -20,7 +20,8 @@ void usb_expire_incomplete_packets(usb_packet_reader_t *readers, size_t reader_c
                                    absolute_time_t now) {
     for (size_t i = 0; i < reader_count; ++i) {
         if (readers[i].index > 0 &&
-            absolute_time_diff_us(readers[i].last_byte_time, now) >= USB_PACKET_TIMEOUT_MS * 1000) {
+            absolute_time_diff_us(readers[i].last_byte_time, now) >=
+                (readers[i].kind == USB_PACKET_CONTROL ? 100 : USB_PACKET_TIMEOUT_MS) * 1000) {
             readers[i].index = 0;
         }
     }
@@ -41,6 +42,16 @@ usb_packet_kind_t usb_process_byte(usb_packet_reader_t *readers, size_t reader_c
     if (active_reader != NULL) {
         active_reader->buffer[active_reader->index++] = byte;
         active_reader->last_byte_time = now;
+        if (active_reader->kind == USB_PACKET_CONTROL && active_reader->index == 6) {
+            size_t payload =
+                (size_t)active_reader->buffer[4] | ((size_t)active_reader->buffer[5] << 8);
+            if (payload > USB_CONTROL_MAX_PACKET_SIZE - 18 || active_reader->buffer[1] != 1 ||
+                active_reader->buffer[3] != 0) {
+                active_reader->index = 0;
+                return USB_PACKET_INVALID;
+            }
+            active_reader->packet_size = payload + 18;
+        }
         if (active_reader->index >= active_reader->packet_size) {
             usb_packet_kind_t kind = active_reader->kind;
             active_reader->index = 0;
@@ -49,6 +60,9 @@ usb_packet_kind_t usb_process_byte(usb_packet_reader_t *readers, size_t reader_c
     } else {
         for (size_t i = 0; i < reader_count; ++i) {
             if (byte == readers[i].start_byte) {
+                if (readers[i].kind == USB_PACKET_CONTROL) {
+                    readers[i].packet_size = USB_CONTROL_MAX_PACKET_SIZE;
+                }
                 readers[i].buffer[0] = byte;
                 readers[i].index = 1;
                 readers[i].last_byte_time = now;
@@ -62,14 +76,24 @@ usb_packet_kind_t usb_process_byte(usb_packet_reader_t *readers, size_t reader_c
 usb_packet_kind_t usb_poll(usb_packet_reader_t *readers, size_t reader_count) {
     absolute_time_t now = get_absolute_time();
     usb_expire_incomplete_packets(readers, reader_count, now);
-    int c = getchar_timeout_us(0);
-    while (c != PICO_ERROR_TIMEOUT) {
-        usb_packet_kind_t kind =
-            usb_process_byte(readers, reader_count, (uint8_t)c, get_absolute_time());
+    if (usb_rx_take_overflow()) {
+        for (size_t i = 0; i < reader_count; ++i) {
+            readers[i].index = 0;
+        }
+        return USB_PACKET_INVALID;
+    }
+    absolute_time_t arrival;
+    int c = usb_rx_get(&arrival);
+    size_t budget = 256;
+    while (c != PICO_ERROR_TIMEOUT && budget-- > 0) {
+        usb_packet_kind_t kind = usb_process_byte(readers, reader_count, (uint8_t)c, arrival);
         if (kind != USB_PACKET_NONE) {
             return kind;
         }
-        c = getchar_timeout_us(0);
+        if (budget == 0) {
+            return USB_PACKET_NONE;
+        }
+        c = usb_rx_get(&arrival);
     }
     return USB_PACKET_NONE;
 }

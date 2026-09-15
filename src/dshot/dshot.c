@@ -538,7 +538,10 @@ static void dshot_cycle_channel(struct dshot_controller *controller) {
     pio_sm_set_enabled(controller->pio, controller->sm, true);
 }
 
+#define RX_READ_TIMEOUT_US 500
+
 void dshot_loop_async_start(struct dshot_controller *controller) {
+    controller->receive_deadline = make_timeout_time_us(RX_READ_TIMEOUT_US);
     if (controller->num_channels > 1) {
         dshot_cycle_channel(controller);
     }
@@ -552,10 +555,10 @@ void dshot_loop_async_start(struct dshot_controller *controller) {
     }
 }
 
-#define RX_READ_TIMEOUT_US 500
-
 static bool dshot_read_rx_words(struct dshot_controller *controller, uint32_t *buffer) {
-    absolute_time_t deadline = make_timeout_time_us(RX_READ_TIMEOUT_US);
+    /* Deadline starts with transmission, so paired PIO receive waits overlap
+       even when a missing ESC exhausts the first controller's timeout. */
+    absolute_time_t deadline = controller->receive_deadline;
     for (int i = 0; i < OVERSAMPLE_TOTAL_WORDS; i++) {
         while (pio_sm_is_rx_fifo_empty(controller->pio, controller->sm)) {
             if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {

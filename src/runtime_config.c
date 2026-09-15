@@ -1,5 +1,6 @@
 #include "runtime_config.h"
 #include "usb_comm.h"
+#include "usb_tx.h"
 #include "version.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -14,7 +15,7 @@ _Static_assert(MCU_FIRMWARE_RELEASE_VERSION_LENGTH <= USB_RELEASE_VERSION_MAX_LE
                "MCU firmware release version is too long for USB reporting");
 
 static bool mcu_supports_dshot_1200(void) {
-#if defined(PICO_RP2350)
+#if defined(PICO_RP2350) && PICO_RP2350
     return true;
 #else
     return false;
@@ -64,7 +65,8 @@ bool mcu_runtime_config_parse_packet(const uint8_t *packet, size_t packet_size,
     }
 
     mcu_control_command_t command = (mcu_control_command_t)packet[1];
-    if (command != MCU_CONTROL_COMMAND_APPLY_CONFIG && command != MCU_CONTROL_COMMAND_GET_INFO) {
+    if (command != MCU_CONTROL_COMMAND_APPLY_CONFIG && command != MCU_CONTROL_COMMAND_GET_INFO &&
+        command != MCU_CONTROL_COMMAND_GET_CONTROL_CAPABILITIES) {
         return false;
     }
 
@@ -121,9 +123,8 @@ void mcu_runtime_config_send_release(uint8_t request_id) {
     const size_t release_packet_size =
         mcu_runtime_config_build_release_packet(release_packet, sizeof(release_packet), request_id);
     if (release_packet_size > 0) {
-        fwrite(release_packet, 1, release_packet_size, stdout);
+        (void)usb_tx_packet(release_packet, release_packet_size, true);
     }
-    fflush(stdout);
 }
 
 void mcu_runtime_config_send_status(uint8_t request_id, mcu_runtime_config_state_t state,
@@ -133,7 +134,6 @@ void mcu_runtime_config_send_status(uint8_t request_id, mcu_runtime_config_state
     const size_t status_packet_size = mcu_runtime_config_build_status_packet(
         status_packet, sizeof(status_packet), request_id, state, error, config);
     if (status_packet_size > 0) {
-        fwrite(status_packet, 1, status_packet_size, stdout);
+        (void)usb_tx_packet(status_packet, status_packet_size, true);
     }
-    fflush(stdout);
 }

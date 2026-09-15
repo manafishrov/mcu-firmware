@@ -17,10 +17,18 @@ ROV. Single binary supports two runtime-selectable ESC protocols: DShot
 ## Structure
 
 - `src/` — firmware sources (`main.c`, `usb_comm.*`, `runtime_config.*`,
-  `log.*`, `dshot/`, `pwm/`)
+  `log.*`, `dshot/`, `pwm/`, `control/`, `imu/`). Core 1 owns SPI and pure
+  control; core 0 owns USB, motor outputs and safety arbitration.
+- `third_party/bmi270/` — pinned official Bosch driver/config image and license;
+  excluded from project formatting and lint fixes.
+- `docs/PICO_CONTROL_PROTOCOL.md` — read before changing control math, USB
+  framing/settings, cross-core ownership, or maintenance transitions.
+- `scripts/control_smoke.py` — coordinator-operated neutral-output hardware smoke
+  test; requires explicit `--execute`, stopped Pi service and disconnected ESCs.
 - `tests/` — Unity tests (`test_*.c`), `mocks/`, `stubs/`, `support/`,
   `unity/`, and `test_startup_commands.py` (compiles the real startup function
-  with recording C stubs)
+  with recording C stubs), the standalone Bosch SPI/USB buffer emulators, and
+  `test_control_runtime.py` (real runtime/transport against a fake SDK).
 - `CMakeLists.txt`, `pico_sdk_import.cmake` — build setup
 - `Makefile` — wraps CMake for the common targets
 - `flake.nix` — toolchain (Pico SDK, ARM GCC, Clang, CMake)
@@ -89,7 +97,7 @@ Conventional Commits, focused on **why**.
 
 - Types: `feat`, `fix`, `refactor`, `perf`, `docs`, `chore`, `ci`, `build`,
   `revert`. `chore(deps)` reserved for Renovate.
-- Scopes: `dshot`, `pwm`, `usb`, `config`, `log`, `tests`, `cmake`, `flake`,
+- Scopes: `control`, `imu`, `dshot`, `pwm`, `usb`, `config`, `log`, `tests`, `cmake`, `flake`,
   `ci`.
 - Subject: imperative, lowercase, ≤72 chars, no period.
 
