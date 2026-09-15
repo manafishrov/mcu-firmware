@@ -10,6 +10,7 @@ TEST_APP_SRC = src/control/controller.c src/control/protocol.c src/usb_rx.c src/
 TEST_RELEASE_VERSION = 1.0.2-rc.3
 CMAKE_FLAGS = -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPICO_SDK_FETCH_FROM_GIT=ON -DPython3_EXECUTABLE=$(shell which python3)
 CMAKE_FLAGS_PICO2 = $(CMAKE_FLAGS) -DPICO_BOARD=pico2
+# GCC's internal stdint.h needs GCC-only macros; keep it after target libc/Clang headers.
 ARM_GCC_INCLUDE = $(shell arm-none-eabi-gcc -print-file-name=include)
 SYSROOT_A = $(shell arm-none-eabi-gcc -print-sysroot)/include
 SYSROOT_B = /usr/arm-none-eabi/include
@@ -44,7 +45,7 @@ lint: build-pico
 	find src -name "*.c" | xargs clang-tidy --fix-errors \
 	-p $(BUILD_DIR_PICO)/compile_commands.json \
 	-header-filter="^$(CURDIR)/src/.*" \
-	--extra-arg=-I$(ARM_GCC_INCLUDE) \
+	--extra-arg=-idirafter$(ARM_GCC_INCLUDE) \
 	--extra-arg=-I$(SYSROOT_A) \
 	--extra-arg=-I$(SYSROOT_B) \
 	--extra-arg=-I$(SYSROOT_C)
@@ -53,7 +54,7 @@ lint-check: build-pico
 	find src -name "*.c" | xargs clang-tidy --warnings-as-errors=* \
 	-p $(BUILD_DIR_PICO)/compile_commands.json \
 	-header-filter="^$(CURDIR)/src/.*" \
-	--extra-arg=-I$(ARM_GCC_INCLUDE) \
+	--extra-arg=-idirafter$(ARM_GCC_INCLUDE) \
 	--extra-arg=-I$(SYSROOT_A) \
 	--extra-arg=-I$(SYSROOT_B) \
 	--extra-arg=-I$(SYSROOT_C)

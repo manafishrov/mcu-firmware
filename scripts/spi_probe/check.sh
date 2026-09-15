@@ -29,7 +29,7 @@ cmake -S "$probe" -B "$build" -DPICO_BOARD=pico -DCMAKE_BUILD_TYPE=Release \
     -DSPI_PROBE_COMPARE_PULLS=ON
 cmake --build "$build" -j4
 clang-tidy "$probe/probe.c" --warnings-as-errors='*' -p "$build" \
-    --extra-arg="-I$(arm-none-eabi-gcc -print-file-name=include)" \
+    --extra-arg="-idirafter$(arm-none-eabi-gcc -print-file-name=include)" \
     --extra-arg="-I$(arm-none-eabi-gcc -print-sysroot)/include"
 for pulls in 0 1; do
     cc -std=c11 -Wall -Wextra -Werror -O2 -DSPI_PROBE_COMPARE_PULLS="$pulls" \

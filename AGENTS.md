@@ -67,6 +67,8 @@ Pre-commit hook runs `clang-format` on staged files. Install once:
 - USB protocol lives in `usb_comm.*`. Changes here must be reflected in
   whatever host (firmware/app) consumes it.
 - Match existing C style; no warnings in `lint-check`.
+- In lint commands, keep GCC-internal headers after target libc and Clang headers
+  with `-idirafter`; prioritizing GCC's `stdint.h` breaks Clang constant macros.
 - Don't widen the toolchain (extra deps, alternative SDKs) without reason.
 - Don't push without being asked. CI builds both Pico and Pico 2 artifacts.
 

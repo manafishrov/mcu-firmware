@@ -3,7 +3,6 @@
 #include "usb_tx.h"
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 
 #define ESC_FIRMWARE_SRAM_START 0x20000000u
