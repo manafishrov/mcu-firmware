@@ -31,6 +31,10 @@ _Static_assert(CURRENT_NEUTRAL_COMMAND == CMD_THROTTLE_NEUTRAL,
 #define INPUT_PACKET_SIZE USB_INPUT_PACKET_SIZE(NUM_MOTORS)
 #define QUALITY_WARN_THRESHOLD 5000
 #define QUALITY_REPORT_INTERVAL_MS 100
+// Batches whatever the queue accumulated since the last flush (see
+// telemetry_usb.c); flushing every main-loop iteration instead emitted one
+// near-empty USB packet per entry, flooding the host's packet parser.
+#define DSHOT_TELEMETRY_FLUSH_INTERVAL_MS 20
 #define DSHOT_TELEMETRY_WARNING_DELAY_MS 500
 #define ESC_PROTOCOL_DETECTION_RESET_MS 2100
 #define PWM_SWITCH_NEUTRAL_HOLD_MS 1000
@@ -666,6 +670,8 @@ static void handle_esc_firmware_data_packet(const uint8_t *packet) {
 }
 
 static void service_dshot_protocol(void) {
+    static uint32_t last_telemetry_flush_ms;
+
     /* Runtime's RX/output leases are authoritative; this low-level idle timer
        must not neutralize a fresh extended command merely because it is not 5A. */
     if (control_runtime_output_permitted()) {
@@ -694,7 +700,11 @@ static void service_dshot_protocol(void) {
                                  get_absolute_time())) {
         send_quality_reports();
     }
-    dshot_telemetry_usb_flush();
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    if (now_ms - last_telemetry_flush_ms >= DSHOT_TELEMETRY_FLUSH_INTERVAL_MS) {
+        last_telemetry_flush_ms = now_ms;
+        dshot_telemetry_usb_flush();
+    }
     if (!all_motor_telemetry_seen && dshot_telemetry_ready()) {
         all_motor_telemetry_seen = true;
         dshot_telemetry_warning_pending = false;
