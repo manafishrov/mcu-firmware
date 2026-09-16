@@ -258,6 +258,15 @@ bool dshot_telemetry_usb_decode_esc_version(esc_version_decoder_t *decoder,
 static void dshot_telemetry_usb_send_esc_version(uint8_t motor, const char *version) {
     (void)motor; (void)version;
 }
+typedef enum {
+    ESC_TELEMETRY_REPORT_ERPM = 0,
+    ESC_TELEMETRY_REPORT_VOLTAGE,
+    ESC_TELEMETRY_REPORT_TEMPERATURE,
+    ESC_TELEMETRY_REPORT_CURRENT,
+} esc_telemetry_report_kind_t;
+bool esc_telemetry_report_due(uint8_t motor_id, esc_telemetry_report_kind_t kind) {
+    (void)motor_id; (void)kind; return true;
+}
 ''' + defines + "\n" + callback + r'''
 int check_raw_current(void) {
     (void)pio0; (void)pio1;
