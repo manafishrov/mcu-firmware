@@ -21,10 +21,12 @@ SYSROOT_C = /usr/lib/arm-none-eabi/include
 build-pico:
 	mkdir -p $(BUILD_DIR_PICO)
 	cd $(BUILD_DIR_PICO) && cmake -S $(CURDIR) -B . $(CMAKE_FLAGS) && cmake --build .
+	python3 $(TEST_DIR)/test_linker_memory.py pico $(BUILD_DIR_PICO)
 
 build-pico2:
 	mkdir -p $(BUILD_DIR_PICO2)
 	cd $(BUILD_DIR_PICO2) && cmake -S $(CURDIR) -B . $(CMAKE_FLAGS_PICO2) && cmake --build .
+	python3 $(TEST_DIR)/test_linker_memory.py pico2 $(BUILD_DIR_PICO2)
 
 flash-pico: build-pico
 	picotool load $(BUILD_DIR_PICO)/firmware.uf2 -f
@@ -76,6 +78,7 @@ test:
 	python3 $(TEST_DIR)/test_control_runtime.py
 	python3 $(TEST_DIR)/test_control_smoke.py
 	python3 $(TEST_DIR)/test_build_identity.py
+	python3 $(TEST_DIR)/test_linker_memory.py
 
 help:
 	@echo "Available targets:"

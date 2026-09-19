@@ -39,8 +39,15 @@ jobs:
           cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DPICO_SDK_FETCH_FROM_GIT=ON
 
-      - name: Run clang-tidy lint
+      - name: Run clang-tidy lint and verify Pico memory
         run: make lint-check
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: 4
+
+      - name: Build Pico 2 and verify memory
+        run: make build-pico2
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: 4
 
   ci:
     name: ci

@@ -57,7 +57,8 @@ jobs:
       - name: Build Firmware for Pico
         run: |
           cd build/pico
-          cmake --build .
+          cmake --build . --parallel 4
+          python3 "$GITHUB_WORKSPACE/tests/test_linker_memory.py" pico .
 
       - name: Configure CMake for Pico 2
         run: |
@@ -68,7 +69,8 @@ jobs:
       - name: Build Firmware for Pico 2
         run: |
           cd build/pico2
-          cmake --build .
+          cmake --build . --parallel 4
+          python3 "$GITHUB_WORKSPACE/tests/test_linker_memory.py" pico2 .
 
       - name: Rename Assets for Release
         run: |
