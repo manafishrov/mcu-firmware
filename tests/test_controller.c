@@ -304,7 +304,9 @@ static void test_user_and_regulator_limits_are_independent(void) {
     state.settings.power[2] = 10;
     state.settings.roll.kp = 10;
     command_zero(true, false);
-    const float q[4] = {sinf(0.2f), 0, 0, cosf(0.2f)};
+    /* Keep the pre-limit work away from an integer boundary: libm rounding of
+       a 0.2-radian half-angle can yield either side of exactly 30 percent. */
+    const float q[4] = {sinf(0.21f), 0, 0, cosf(0.21f)};
     TEST_ASSERT_TRUE(control_set_attitude(&state, q));
     const float direction[8] = {1, 0, 0, 0, 0, 0, 1, 0};
     control_command(&state, direction, 1.0f / 60.0f, true, false);
@@ -313,6 +315,19 @@ static void test_user_and_regulator_limits_are_independent(void) {
     TEST_ASSERT_EQUAL_UINT16(1100, output.motors[5]);
     TEST_ASSERT_EQUAL_UINT16(1500, output.motors[6]);
     TEST_ASSERT_EQUAL_UINT8(30, output.work_percent);
+}
+
+static void test_work_percent_truncates_at_float_boundaries(void) {
+    /* Isolate truncation from transcendental rounding in the attitude path. */
+    const float inputs[] = {nextafterf(0.8f, 0.0f), 0.8f, nextafterf(0.8f, 1.0f)};
+    const uint8_t expected[] = {9, 10, 10};
+    for (unsigned i = 0; i < 3; ++i) {
+        identity_settings();
+        const float direction[8] = {inputs[i], 0, 0, 0, 0, 0, 0, 0};
+        control_command(&state, direction, 1.0f / 60.0f, false, false);
+        control_step(&state, &stationary, 0.002f, &output);
+        TEST_ASSERT_EQUAL_UINT8(expected[i], output.work_percent);
+    }
 }
 
 static void test_movement_transform_coefficients_zero_ratios_and_yaw_removal(void) {
@@ -744,6 +759,7 @@ void test_controller(void) {
     RUN_TEST(test_depth_integral_relaxation_and_clip);
     RUN_TEST(test_allocation_power_work_reorder_spin_and_truncation);
     RUN_TEST(test_user_and_regulator_limits_are_independent);
+    RUN_TEST(test_work_percent_truncates_at_float_boundaries);
     RUN_TEST(test_movement_transform_coefficients_zero_ratios_and_yaw_removal);
     RUN_TEST(test_nullspace_initial_crossing_choice_and_sequential_order);
     RUN_TEST(test_nullspace_decay_only_once_per_command);
