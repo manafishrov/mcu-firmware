@@ -17,7 +17,10 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      CLANG_FORMAT: clang-format-19
+      CLANG_TIDY: clang-tidy-19
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -28,7 +31,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format clang-tidy cmake build-essential gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+          sudo apt-get install -y clang-format-19 clang-tidy-19 cmake build-essential gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+          "$CLANG_FORMAT" --version
+          "$CLANG_TIDY" --version
 
       - name: Run clang-format check
         run: make format-check
@@ -54,7 +59,7 @@ jobs:
     if: always()
     needs:
       - check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require all checks
         env:
