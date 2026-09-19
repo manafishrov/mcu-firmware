@@ -73,6 +73,10 @@ Pre-commit hook runs `clang-format` on staged files. Install once:
 - USB protocol lives in `usb_comm.*`. Changes here must be reflected in
   whatever host (firmware/app) consumes it.
 - Match existing C style; no warnings in `lint-check`.
+- Nix and CI use LLVM 19 as the validated lint/format baseline. CI selects the
+  versioned binaries through Make's `CLANG_FORMAT` / `CLANG_TIDY` overrides.
+  Before upgrading it, assess new diagnostics separately; preserve controller math
+  and vendor bytes rather than folding a broad source cleanup into a lock update.
 - In lint commands, keep GCC-internal headers after target libc and Clang headers
   with `-idirafter`; prioritizing GCC's `stdint.h` breaks Clang constant macros.
 - Don't widen the toolchain (extra deps, alternative SDKs) without reason.

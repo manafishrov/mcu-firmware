@@ -1,3 +1,5 @@
+CLANG_FORMAT ?= clang-format
+CLANG_TIDY ?= clang-tidy
 BUILD_DIR_PICO = build/pico
 BUILD_DIR_PICO2 = build/pico2
 TEST_DIR = tests
@@ -38,13 +40,13 @@ clean:
 	rm -rf build
 
 format:
-	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" ! -path "./third_party/*" | xargs clang-format -i
+	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" ! -path "./third_party/*" | xargs $(CLANG_FORMAT) -i
 
 format-check:
-	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" ! -path "./third_party/*" | xargs clang-format --dry-run --Werror
+	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" ! -path "./third_party/*" | xargs $(CLANG_FORMAT) --dry-run --Werror
 
 lint: build-pico
-	find src -name "*.c" | xargs clang-tidy --fix-errors \
+	find src -name "*.c" | xargs $(CLANG_TIDY) --fix-errors \
 	-p $(BUILD_DIR_PICO)/compile_commands.json \
 	-header-filter="^$(CURDIR)/src/.*" \
 	--extra-arg=-idirafter$(ARM_GCC_INCLUDE) \
@@ -53,7 +55,7 @@ lint: build-pico
 	--extra-arg=-I$(SYSROOT_C)
 
 lint-check: build-pico
-	find src -name "*.c" | xargs clang-tidy --warnings-as-errors=* \
+	find src -name "*.c" | xargs $(CLANG_TIDY) --warnings-as-errors=* \
 	-p $(BUILD_DIR_PICO)/compile_commands.json \
 	-header-filter="^$(CURDIR)/src/.*" \
 	--extra-arg=-idirafter$(ARM_GCC_INCLUDE) \

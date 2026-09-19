@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
   };
 
   outputs = {
@@ -25,8 +25,10 @@
           python3
           gcc-arm-embedded
           picotool
-          clang
-          clang-tools
+          # Keep the validated lint/format baseline independent of channel bumps.
+          # LLVM 21 adds diagnostics that need a separate source-baseline migration.
+          llvmPackages_19.clang
+          llvmPackages_19.clang-tools
           picocom
           pre-commit
         ];
