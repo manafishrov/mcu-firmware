@@ -15,6 +15,11 @@
 #define TELEMETRY_FLUSH_BATCH_PACKETS 16
 #define TELEMETRY_BATCH_HEADER_SIZE 2
 #define TELEMETRY_BATCH_FOOTER_SIZE 1
+// The app only displays these at a few Hz; the ESC reports them far faster
+// than that over DShot bidirectional telemetry. current_sensing's own
+// min/max/mean accumulation still sees every raw sample (see
+// dshot_telemetry_callback below) - only the outbound USB report is capped.
+#define ESC_TELEMETRY_REPORT_INTERVAL_MS 100
 #define ESC_VERSION_SIGNATURE 0xA5u
 
 typedef struct {
@@ -23,11 +28,29 @@ typedef struct {
     int32_t value;
 } telemetry_queue_entry_t;
 
+typedef enum {
+    ESC_TELEMETRY_REPORT_ERPM = 0,
+    ESC_TELEMETRY_REPORT_VOLTAGE,
+    ESC_TELEMETRY_REPORT_TEMPERATURE,
+    ESC_TELEMETRY_REPORT_CURRENT,
+    ESC_TELEMETRY_REPORT_KIND_COUNT,
+} esc_telemetry_report_kind_t;
+
 static telemetry_queue_entry_t telemetry_queue[TELEMETRY_QUEUE_CAPACITY];
 static uint16_t telemetry_queue_head = 0;
 static uint16_t telemetry_queue_tail = 0;
 static esc_version_decoder_t esc_version_decoders[NUM_MOTORS];
 static bool esc_versions_reported[NUM_MOTORS];
+static uint32_t esc_telemetry_report_due_ms[NUM_MOTORS][ESC_TELEMETRY_REPORT_KIND_COUNT];
+
+static bool esc_telemetry_report_due(uint8_t motor_id, esc_telemetry_report_kind_t kind) {
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    if (now_ms - esc_telemetry_report_due_ms[motor_id][kind] < ESC_TELEMETRY_REPORT_INTERVAL_MS) {
+        return false;
+    }
+    esc_telemetry_report_due_ms[motor_id][kind] = now_ms;
+    return true;
+}
 
 static uint8_t esc_version_crc8_update(uint8_t crc, uint8_t value) {
     crc ^= value;
@@ -54,6 +77,7 @@ void dshot_telemetry_usb_init(void) {
     telemetry_queue_tail = 0;
     memset(esc_version_decoders, 0, sizeof(esc_version_decoders));
     memset(esc_versions_reported, 0, sizeof(esc_versions_reported));
+    memset(esc_telemetry_report_due_ms, 0, sizeof(esc_telemetry_report_due_ms));
 }
 
 void dshot_telemetry_usb_reset(void) {
@@ -61,6 +85,7 @@ void dshot_telemetry_usb_reset(void) {
     telemetry_queue_tail = 0;
     memset(esc_version_decoders, 0, sizeof(esc_version_decoders));
     memset(esc_versions_reported, 0, sizeof(esc_versions_reported));
+    memset(esc_telemetry_report_due_ms, 0, sizeof(esc_telemetry_report_due_ms));
 }
 
 void dshot_telemetry_usb_begin_esc_version_discovery(void) {
@@ -214,20 +239,28 @@ void dshot_telemetry_callback(void *context, int channel, enum dshot_telemetry_t
     switch (type) {
     case DSHOT_TELEMETRY_TYPE_ERPM:
         current_sensing_observe_erpm(global_motor_id, value, to_ms_since_boot(get_absolute_time()));
-        dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_ERPM, (int32_t)value);
+        if (esc_telemetry_report_due(global_motor_id, ESC_TELEMETRY_REPORT_ERPM)) {
+            dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_ERPM, (int32_t)value);
+        }
         break;
     case DSHOT_TELEMETRY_TYPE_VOLTAGE: {
-        dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_VOLTAGE, (int32_t)value);
+        if (esc_telemetry_report_due(global_motor_id, ESC_TELEMETRY_REPORT_VOLTAGE)) {
+            dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_VOLTAGE, (int32_t)value);
+        }
         break;
     }
     case DSHOT_TELEMETRY_TYPE_TEMPERATURE: {
-        dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_TEMPERATURE, (int32_t)value);
+        if (esc_telemetry_report_due(global_motor_id, ESC_TELEMETRY_REPORT_TEMPERATURE)) {
+            dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_TEMPERATURE, (int32_t)value);
+        }
         break;
     }
     case DSHOT_TELEMETRY_TYPE_CURRENT: {
         current_sensing_observe_current(global_motor_id, value,
                                         to_ms_since_boot(get_absolute_time()));
-        dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_CURRENT, (int32_t)value);
+        if (esc_telemetry_report_due(global_motor_id, ESC_TELEMETRY_REPORT_CURRENT)) {
+            dshot_telemetry_usb_send(global_motor_id, TELEMETRY_TYPE_CURRENT, (int32_t)value);
+        }
         break;
     }
     case DSHOT_TELEMETRY_TYPE_DEBUG1:
