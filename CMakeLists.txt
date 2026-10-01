@@ -4,7 +4,15 @@ include(pico_sdk_import.cmake)
 
 project(microcontroller_firmware)
 
+# nixpkgs may install an older picotool. Use the SDK-selected build-time tool
+# for identical UF2 generation locally and in CI.
+set(PICOTOOL_FORCE_FETCH_FROM_GIT ON CACHE BOOL "Build SDK-matched picotool")
 pico_sdk_init()
+
+if(NOT PICO_SDK_VERSION_STRING VERSION_EQUAL PICO_SDK_FETCH_FROM_GIT_VERSION)
+    message(FATAL_ERROR "Expected Pico SDK ${PICO_SDK_FETCH_FROM_GIT_VERSION}, got ${PICO_SDK_VERSION_STRING} at ${PICO_SDK_PATH}; remove stale SDK paths/caches")
+endif()
+message(STATUS "Manafish Pico SDK ${PICO_SDK_VERSION_STRING}: ${PICO_SDK_PATH}")
 
 set(FIRMWARE_EXE_NAME firmware)
 set(MANAFISH_RELEASE_VERSION "" CACHE STRING "Exact Manafish MCU release version")
@@ -97,20 +105,6 @@ target_link_libraries(${FIRMWARE_EXE_NAME}
 # The SDK normally places core0's stack in a 4 KiB scratch bank. The bounded
 # frame codec needs a real 16 KiB reservation, not a stack-size symbol whose
 # range silently overlaps the heap. Core1 uses its explicit 8 KiB BSS stack.
-set(CONTROL_MEMORY_PLATFORM rp2040)
-if(PICO_PLATFORM MATCHES "^rp2350")
-    set(CONTROL_MEMORY_PLATFORM rp2350)
-endif()
-file(READ "${PICO_SDK_PATH}/src/rp2_common/pico_crt0/${CONTROL_MEMORY_PLATFORM}/memmap_default.ld"
-    CONTROL_LINKER_SCRIPT)
-string(REPLACE ".stack_dummy (NOLOAD):" ".stack_dummy ORIGIN(RAM) + LENGTH(RAM) - 0x4000 (NOLOAD):"
-    CONTROL_LINKER_SCRIPT "${CONTROL_LINKER_SCRIPT}")
-string(REPLACE "KEEP(*(.stack*))\n    } > SCRATCH_Y" "KEEP(*(.stack*))\n    } > RAM"
-    CONTROL_LINKER_SCRIPT "${CONTROL_LINKER_SCRIPT}")
-string(REPLACE "__StackTop = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);"
-    "__StackTop = ORIGIN(RAM) + LENGTH(RAM);" CONTROL_LINKER_SCRIPT "${CONTROL_LINKER_SCRIPT}")
-string(REPLACE "__HeapLimit = ORIGIN(RAM) + LENGTH(RAM);"
-    "__HeapLimit = ORIGIN(RAM) + LENGTH(RAM) - 0x4000;" CONTROL_LINKER_SCRIPT "${CONTROL_LINKER_SCRIPT}")
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/control_memmap.ld" "${CONTROL_LINKER_SCRIPT}")
-pico_set_linker_script(${FIRMWARE_EXE_NAME} "${CMAKE_CURRENT_BINARY_DIR}/control_memmap.ld")
+include(cmake/control_memory.cmake)
+control_reserve_stack(${FIRMWARE_EXE_NAME})
 pico_add_extra_outputs(${FIRMWARE_EXE_NAME})

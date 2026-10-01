@@ -34,7 +34,11 @@ ROV. Single binary supports two runtime-selectable ESC protocols: DShot
   requires host CMake, not the Pico SDK).
 - `CMakeLists.txt`, `pico_sdk_import.cmake` — build setup
 - `Makefile` — wraps CMake for the common targets
-- `flake.nix` — toolchain (Pico SDK, ARM GCC, Clang, CMake)
+- `flake.nix` — host toolchain (ARM GCC, Clang, CMake). CMake fetches the
+  SDK pinned in `pico_sdk_import.cmake` in both Nix and CI; no shell SDK override.
+- `cmake/control_memory.cmake` — checked SDK linker-fragment overrides for the
+  real 16 KiB core0 stack. Preserve upstream TLS/platform sections and core1's
+  explicit 8 KiB BSS stack; do not fix SDK upgrades by changing only a path.
 
 ## Commands
 
@@ -52,7 +56,9 @@ Use the dev shell (`direnv allow` in repo, or `nix develop`). Then:
 ```sh
 make format-check
 make lint-check          # clang-tidy with -Werror
-make test                # Unity host tests and Python/C startup regression
+make test                # Unity, Python/C regressions and memory-verifier tests
+make build-pico         # includes real ELF/map memory verification
+make build-pico2        # includes real ELF/map memory verification
 ```
 
 Auto-fix: `make format`, `make lint`.
@@ -67,10 +73,17 @@ Pre-commit hook runs `clang-format` on staged files. Install once:
 - USB protocol lives in `usb_comm.*`. Changes here must be reflected in
   whatever host (firmware/app) consumes it.
 - Match existing C style; no warnings in `lint-check`.
+- Nix and CI use LLVM 19 as the validated lint/format baseline. CI selects the
+  versioned binaries through Make's `CLANG_FORMAT` / `CLANG_TIDY` overrides.
+  Before upgrading it, assess new diagnostics separately; preserve controller math
+  and vendor bytes rather than folding a broad source cleanup into a lock update.
 - In lint commands, keep GCC-internal headers after target libc and Clang headers
   with `-idirafter`; prioritizing GCC's `stdint.h` breaks Clang constant macros.
 - Don't widen the toolchain (extra deps, alternative SDKs) without reason.
-- Don't push without being asked. CI builds both Pico and Pico 2 artifacts.
+- Don't push without being asked. Required PR CI builds both Pico and Pico 2
+  and runs `tests/test_linker_memory.py` on each ELF/map. Release builds run the
+  same verification. A host/mock test or a build against an older SDK does not
+  validate an SDK upgrade. Record the actual configured SDK path/version.
 
 ## Releases
 

@@ -1,3 +1,5 @@
+CLANG_FORMAT ?= clang-format
+CLANG_TIDY ?= clang-tidy
 BUILD_DIR_PICO = build/pico
 BUILD_DIR_PICO2 = build/pico2
 TEST_DIR = tests
@@ -21,10 +23,12 @@ SYSROOT_C = /usr/lib/arm-none-eabi/include
 build-pico:
 	mkdir -p $(BUILD_DIR_PICO)
 	cd $(BUILD_DIR_PICO) && cmake -S $(CURDIR) -B . $(CMAKE_FLAGS) && cmake --build .
+	python3 $(TEST_DIR)/test_linker_memory.py pico $(BUILD_DIR_PICO)
 
 build-pico2:
 	mkdir -p $(BUILD_DIR_PICO2)
 	cd $(BUILD_DIR_PICO2) && cmake -S $(CURDIR) -B . $(CMAKE_FLAGS_PICO2) && cmake --build .
+	python3 $(TEST_DIR)/test_linker_memory.py pico2 $(BUILD_DIR_PICO2)
 
 flash-pico: build-pico
 	picotool load $(BUILD_DIR_PICO)/firmware.uf2 -f
@@ -36,13 +40,13 @@ clean:
 	rm -rf build
 
 format:
-	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" ! -path "./third_party/*" | xargs clang-format -i
+	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" ! -path "./third_party/*" | xargs $(CLANG_FORMAT) -i
 
 format-check:
-	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" ! -path "./third_party/*" | xargs clang-format --dry-run --Werror
+	find . \( -name "*.c" -o -name "*.h" \) ! -path "./build/*" ! -path "./tests/unity/*" ! -path "./third_party/*" | xargs $(CLANG_FORMAT) --dry-run --Werror
 
 lint: build-pico
-	find src -name "*.c" | xargs clang-tidy --fix-errors \
+	find src -name "*.c" | xargs $(CLANG_TIDY) --fix-errors \
 	-p $(BUILD_DIR_PICO)/compile_commands.json \
 	-header-filter="^$(CURDIR)/src/.*" \
 	--extra-arg=-idirafter$(ARM_GCC_INCLUDE) \
@@ -51,7 +55,7 @@ lint: build-pico
 	--extra-arg=-I$(SYSROOT_C)
 
 lint-check: build-pico
-	find src -name "*.c" | xargs clang-tidy --warnings-as-errors=* \
+	find src -name "*.c" | xargs $(CLANG_TIDY) --warnings-as-errors=* \
 	-p $(BUILD_DIR_PICO)/compile_commands.json \
 	-header-filter="^$(CURDIR)/src/.*" \
 	--extra-arg=-idirafter$(ARM_GCC_INCLUDE) \
@@ -76,6 +80,7 @@ test:
 	python3 $(TEST_DIR)/test_control_runtime.py
 	python3 $(TEST_DIR)/test_control_smoke.py
 	python3 $(TEST_DIR)/test_build_identity.py
+	python3 $(TEST_DIR)/test_linker_memory.py
 
 help:
 	@echo "Available targets:"

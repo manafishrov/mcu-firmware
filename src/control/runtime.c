@@ -13,6 +13,7 @@
 #include <math.h>
 #include <pico/multicore.h>
 #include <pico/platform.h>
+#include <pico/platform/common.h>
 #include <pico/time.h>
 #include <pico/types.h>
 #include <stdbool.h>
@@ -95,7 +96,8 @@ static volatile uint32_t accepted_floor;
 static volatile uint32_t commit_authorized_sequence;
 static volatile uint32_t sensor_retry_requested, sensor_retry_inhibited, output_permitted;
 static struct repeating_timer safety_timer;
-static uint32_t core1_stack[2048];
+/* The SDK restores this top verbatim before entering C (AAPCS requires 8 bytes). */
+_Alignas(8) static uint32_t core1_stack[2048];
 static uint32_t active_session, last_sequence, last_request_crc;
 static uint32_t active_generation, active_digest, telemetry_sequence;
 static uint32_t active_commit_sequence, safety_failed_session;

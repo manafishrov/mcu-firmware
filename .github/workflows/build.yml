@@ -57,7 +57,8 @@ jobs:
       - name: Build Firmware for Pico
         run: |
           cd build/pico
-          cmake --build .
+          cmake --build . --parallel 4
+          python3 "$GITHUB_WORKSPACE/tests/test_linker_memory.py" pico .
 
       - name: Configure CMake for Pico 2
         run: |
@@ -68,7 +69,8 @@ jobs:
       - name: Build Firmware for Pico 2
         run: |
           cd build/pico2
-          cmake --build .
+          cmake --build . --parallel 4
+          python3 "$GITHUB_WORKSPACE/tests/test_linker_memory.py" pico2 .
 
       - name: Rename Assets for Release
         run: |
@@ -76,7 +78,7 @@ jobs:
           cp build/pico2/firmware.uf2 pico2-${{ github.ref_name }}.uf2
 
       - name: Create Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

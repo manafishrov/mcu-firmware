@@ -1,6 +1,6 @@
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
   };
 
   outputs = {
@@ -16,24 +16,25 @@
   in {
     devShells = forAllSystems (system: let
       pkgs = nixpkgs.legacyPackages.${system};
-      pico-sdk-with-submodules = pkgs.pico-sdk.override {
-        withSubmodules = true;
-      };
     in {
       default = pkgs.mkShell {
         buildInputs = with pkgs; [
+          git
           pkg-config
           cmake
           python3
           gcc-arm-embedded
           picotool
-          pico-sdk-with-submodules
-          clang
-          clang-tools
+          # Keep the validated lint/format baseline independent of channel bumps.
+          # LLVM 21 adds diagnostics that need a separate source-baseline migration.
+          llvmPackages_19.clang
+          llvmPackages_19.clang-tools
           picocom
           pre-commit
         ];
-        PICO_SDK_PATH = "${pico-sdk-with-submodules}/lib/pico-sdk";
+        # CMake fetches the same pinned SDK as CI; nixpkgs' SDK can lag behind.
+        # Do not export PICO_SDK_PATH and silently bypass pico_sdk_import.cmake.
+        # CMake also fetches SDK-matched build-time UF2 tooling.
       };
     });
   };
