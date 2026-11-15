@@ -263,18 +263,35 @@ bool am32_bootloader_flash_all(const uint8_t *image, uint16_t image_size,
     // eight bootloaders can be entered together before programming begins.
     sleep_ms(AM32_BOOTLOADER_ENTRY_MS);
 
-    // Prove that every connected ESC is the supported target before writing
-    // the first byte. A missing or wrong target therefore remains a fully
-    // recoverable pre-write failure for the entire bank.
+    // Prove that every ESC that answers is the supported target before
+    // writing the first byte. A wrong target therefore remains a fully
+    // recoverable pre-write failure for the entire bank. A slot whose
+    // bootloader never answers has no ESC to flash, so it is reported and
+    // skipped; each report also keeps the host's status timeout alive.
+    uint8_t present = 0;
     for (uint8_t motor = 0; motor < NUM_MOTORS; ++motor) {
         *failed_motor = motor;
-        if (!wait_for_motor(motor, error)) {
+        if (wait_for_motor(motor, error)) {
+            present |= (uint8_t)(1u << motor);
+        } else if (*error == ESC_FIRMWARE_UPDATE_ERROR_BOOTLOADER_CONNECT) {
+            esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_MOTOR_SKIPPED, motor,
+                                            ESC_FIRMWARE_UPDATE_ERROR_BOOTLOADER_CONNECT, 0);
+        } else {
             run_all();
             return false;
         }
     }
+    if (present == 0) {
+        *error = ESC_FIRMWARE_UPDATE_ERROR_BOOTLOADER_CONNECT;
+        *failed_motor = UINT8_MAX;
+        run_all();
+        return false;
+    }
 
     for (uint8_t motor = 0; motor < NUM_MOTORS; ++motor) {
+        if ((present & (1u << motor)) == 0) {
+            continue;
+        }
         *failed_motor = motor;
         esc_firmware_update_send_status(ESC_FIRMWARE_UPDATE_STATUS_MOTOR_BEGIN, motor,
                                         ESC_FIRMWARE_UPDATE_ERROR_NONE, 0);

@@ -77,6 +77,9 @@ test:
 	cc -std=c11 -Wall -Wextra -Werror -DUSB_BUFFERS_TEST -I$(TEST_DIR)/usb_buffer_mocks \
 		$(TEST_DIR)/test_usb_buffers.c -o $(TEST_BUILD_DIR)/test_usb_buffers
 	./$(TEST_BUILD_DIR)/test_usb_buffers
+	cc -std=c11 -Wall -Wextra -Werror -DAM32_BOOTLOADER_TEST -I$(TEST_DIR)/am32_bootloader_mocks -Isrc \
+		$(TEST_DIR)/test_am32_bootloader.c -o $(TEST_BUILD_DIR)/test_am32_bootloader
+	./$(TEST_BUILD_DIR)/test_am32_bootloader
 	python3 $(TEST_DIR)/test_control_runtime.py
 	python3 $(TEST_DIR)/test_control_smoke.py
 	python3 $(TEST_DIR)/test_build_identity.py

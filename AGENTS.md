@@ -27,7 +27,9 @@ ROV. Single binary supports two runtime-selectable ESC protocols: DShot
   test; requires explicit `--execute`, stopped Pi service and disconnected ESCs.
 - `tests/` — Unity tests (`test_*.c`), `mocks/`, `stubs/`, `support/`,
   `unity/`, and `test_startup_commands.py` (compiles the real startup function
-  with recording C stubs), the standalone Bosch SPI/USB buffer emulators, and
+  with recording C stubs), the standalone Bosch SPI/USB buffer emulators,
+  `test_am32_bootloader.c` (real ESC bank flasher against simulated AM32
+  bootloaders on a virtual one-wire UART), and
   `test_control_runtime.py` (real runtime/transport against a fake SDK),
   `test_control_smoke.py` (offline checks of bench evidence handling), and
   `test_build_identity.py` (CMake release/development metadata and real USB replies;
